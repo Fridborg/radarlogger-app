@@ -128,7 +128,7 @@ class _StatsTabState extends State<StatsTab> {
                 ]),
                 const SizedBox(height: 16),
                 Row(children: [
-                  tile(n == 0 ? '–' : '$v85', 'v85 km/h\n(85 % kör långsammare)'),
+                  tile(n == 0 ? '–' : '$v85', 'v85 km/h'),
                   tile(n == 0 ? '–' : '${overPct.toStringAsFixed(0)} %', 'över $_limit km/h'),
                   tile('$over', 'antal över'),
                 ]),
@@ -136,21 +136,26 @@ class _StatsTabState extends State<StatsTab> {
             ),
           ),
         ),
-        Row(
+        const SizedBox(height: 4),
+        Text('Hastighetsgräns', style: theme.textTheme.titleSmall),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
           children: [
-            const Text('Hastighetsgräns:'),
-            const SizedBox(width: 8),
             for (final l in [30, 40, 50, 60, 70, 80])
-              Padding(
-                padding: const EdgeInsets.only(right: 4),
-                child: ChoiceChip(
-                  label: Text('$l'),
-                  selected: _limit == l,
-                  visualDensity: VisualDensity.compact,
-                  onSelected: (_) => setState(() => _limit = l),
-                ),
+              ChoiceChip(
+                label: Text('$l'),
+                selected: _limit == l,
+                visualDensity: VisualDensity.compact,
+                onSelected: (_) => setState(() => _limit = l),
               ),
           ],
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text('v85 = 85 % av fordonen kör långsammare än detta',
+              style: theme.textTheme.bodySmall),
         ),
         if (fastest != null && fastest.dateTime != null)
           Padding(
@@ -186,14 +191,19 @@ class _StatsTabState extends State<StatsTab> {
                             ),
                           ),
                         ),
-                        const SizedBox(height: 2),
-                        Text(h % 3 == 0 ? '$h' : '', style: const TextStyle(fontSize: 9)),
                       ],
                     ),
                   ),
                 ),
             ],
           ),
+        ),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            for (final h in [0, 6, 12, 18])
+              Expanded(child: Text('$h', style: theme.textTheme.bodySmall)),
+          ],
         ),
         const SizedBox(height: 20),
         Text('Hastighetsfördelning', style: theme.textTheme.titleSmall),
