@@ -62,5 +62,10 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           name: Radarlogger build ${{ github.run_number }}
-          body: Ladda ner radarlogger.apk och installera på telefonen.
-          files: out/radarlogger.apk
+          body: |
+            radarlogger.apk – appen, installera på telefonen.
+            radarlogger-x.y.z-ota.bin – ny firmware till radarloggern, laddas upp via http://192.168.4.1 (loggen finns kvar).
+            radarlogger-x.y.z.bin – hel installation via USB med ESPHome Web (raderar loggen).
+          files: |
+            out/radarlogger.apk
+            firmware/bin/radarlogger-*.bin
