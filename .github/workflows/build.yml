@@ -3,6 +3,11 @@ name: Bygg Android-app
 on:
   push:
     branches: [main]
+    paths:
+      - "lib/**"
+      - "pubspec.yaml"
+      - "tool/**"
+      - ".github/workflows/**"
   workflow_dispatch:
 
 permissions:
