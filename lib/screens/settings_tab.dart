@@ -71,7 +71,7 @@ class _SettingsTabState extends State<SettingsTab> {
   }
 
   Widget _number(String label, String help, int value, int min, int max,
-      void Function(int) onChanged) {
+      void Function(int) onChanged, {int step = 1}) {
     return ListTile(
       title: Text(label),
       subtitle: Text(help),
@@ -80,7 +80,7 @@ class _SettingsTabState extends State<SettingsTab> {
         children: [
           IconButton(
             icon: const Icon(Icons.remove_circle_outline),
-            onPressed: value > min ? () => onChanged(value - 1) : null,
+            onPressed: value > min ? () => onChanged((value - step).clamp(min, max)) : null,
           ),
           SizedBox(
             width: 40,
@@ -89,7 +89,7 @@ class _SettingsTabState extends State<SettingsTab> {
           ),
           IconButton(
             icon: const Icon(Icons.add_circle_outline),
-            onPressed: value < max ? () => onChanged(value + 1) : null,
+            onPressed: value < max ? () => onChanged((value + step).clamp(min, max)) : null,
           ),
         ],
       ),
@@ -140,7 +140,7 @@ class _SettingsTabState extends State<SettingsTab> {
           ),
         ),
         _number('Max avstånd (m)', 'Hur långt bort fordon upptäcks', s.maxDistance, 10, 100,
-            (v) => set((e) => e.maxDistance = v)),
+            (v) => set((e) => e.maxDistance = v), step: 5),
         _number('Radarns min-hastighet', 'Långsammare mål ignoreras (km/h)', s.radarMinSpeed, 0,
             120, (v) => set((e) => e.radarMinSpeed = v)),
         const Divider(),
@@ -148,6 +148,17 @@ class _SettingsTabState extends State<SettingsTab> {
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
           child: Text('Loggen', style: theme.textTheme.titleSmall),
         ),
+        if (s.hasReportDistance)
+          _number(
+              'Rapportavstånd (m)',
+              s.reportDistance == 0
+                  ? 'Av: högsta hastigheten sparas'
+                  : 'Hastigheten sparas när bilen passerar ${s.reportDistance} m',
+              s.reportDistance,
+              0,
+              100,
+              (v) => set((e) => e.reportDistance = v),
+              step: 5),
         _number('Spara passager över', 'Långsammare passager sparas inte (km/h)', s.logMinSpeed,
             0, 200, (v) => set((e) => e.logMinSpeed = v)),
         _number('Paus innan passage avslutas', 'Tiondels sekunder (15 = 1,5 s)', s.gapDecis, 3,

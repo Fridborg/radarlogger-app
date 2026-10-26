@@ -18,4 +18,6 @@ GitHub Actions bygger appen automatiskt vid varje ändring (`.github/workflows/b
 ## Firmware
 - `firmware/Radarlogger/` – koden för radarloggern (ESP32-S3 + LD2451)
 - `firmware/RadarSimulator/` – låtsasradar för test på ESP nummer två
-- `firmware/bin/` – färdiga filer att flasha med ESPHome Web eller esptool-js (adress `0x0`)
+- `firmware/bin/` – färdiga filer:
+  - `radarlogger-x.y.z.bin` – hel installation via USB (ESPHome Web eller esptool-js, adress `0x0`). Raderar loggen.
+  - `radarlogger-x.y.z-ota.bin` – uppdatering via WiFi på `http://192.168.4.1`. Loggen finns kvar.

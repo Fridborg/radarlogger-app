@@ -93,7 +93,8 @@ class LogTab extends StatelessWidget {
                         child: Text('${r.speed}', style: const TextStyle(fontWeight: FontWeight.bold)),
                       ),
                       title: Text(dt != null ? '${formatDate(dt)}  ${formatTime(dt)}' : 'Okänd tid'),
-                      subtitle: Text('${r.distance} m · ${r.approaching ? 'mot radarn' : 'från radarn'}'),
+                      subtitle: Text('${r.distance} m${r.atReportLine ? ' (rapportlinjen)' : ''} · '
+                          '${r.approaching ? 'mot radarn' : 'från radarn'}'),
                       trailing: Text('#${records.length - i}', style: theme.textTheme.bodySmall),
                     );
                   },

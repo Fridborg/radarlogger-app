@@ -1,7 +1,7 @@
 /*
  * ============================================================
  *  RADARLOGGER  –  HLK-LD2451 + ESP32-S3 + Bluetooth + WiFi
- *  Version 0.2.1
+ *  Version 0.3.0
  * ============================================================
  *
  *  Fristående hastighetslogger och fordonsräknare.
@@ -31,7 +31,9 @@
  *      Board:            ESP32S3 Dev Module
  *      Flash Size:       16MB
  *      PSRAM:            OPI PSRAM
- *      Partition Scheme: Huge APP (3MB No OTA/1MB SPIFFS)
+ *      Partition Scheme: 16M Flash (3MB APP/9.9MB FATFS)
+ *                        (filen partitions.csv i samma mapp används ändå:
+ *                         två app-platser för uppdatering via WiFi + 10 MB logg)
  *      USB CDC On Boot:  Disabled  (använd porten märkt "UART")
  * ============================================================
  */
@@ -42,13 +44,14 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Update.h>
 #include <sys/time.h>
 #include <time.h>
 
 // ------------------------------------------------------------
 //  INSTÄLLNINGAR SOM DU KAN ÄNDRA
 // ------------------------------------------------------------
-#define FW_VERSION      "0.2.1"
+#define FW_VERSION      "0.3.0"
 #define DEVICE_PREFIX   "Radarlogger"   // Bluetooth-namn, följt av 4 tecken från MAC
 #define BLE_PASSKEY     123456          // 6-siffrig PIN vid parkoppling
 
@@ -87,6 +90,7 @@
 // ------------------------------------------------------------
 #define LOG_FILE        "/passes.bin"
 #define FLAG_UNSYNCED   0x01            // tiden är sekunder sedan start, inte riktig tid
+#define FLAG_REPORTLINE 0x02            // hastigheten mättes vid rapportavståndet
 
 struct __attribute__((packed)) PassRecord {   // 8 byte per passage
   uint32_t time;        // unix-tid (UTC), eller sekunder sedan start om FLAG_UNSYNCED
@@ -96,7 +100,7 @@ struct __attribute__((packed)) PassRecord {   // 8 byte per passage
   uint8_t  flags;
 };
 
-struct __attribute__((packed)) Settings {      // 8 byte
+struct __attribute__((packed)) Settings {      // 9 byte
   uint8_t maxDistance;   // 10–100 m
   uint8_t direction;     // 0 = bara från, 1 = bara mot, 2 = båda
   uint8_t radarMinSpeed; // 0–120 km/h, radarn ignorerar långsammare mål
@@ -105,6 +109,7 @@ struct __attribute__((packed)) Settings {      // 8 byte
   uint8_t snr;           // 3–8 (0 = radarns standard 4), 255 = ändra inte
   uint8_t gapDecis;      // tid utan mål innan passagen avslutas, i tiondels sekunder
   uint8_t logMinSpeed;   // passager under denna hastighet sparas inte
+  uint8_t reportDistance;// 0 = spara högsta hastighet, annars hastigheten vid detta avstånd (m)
 };
 
 struct __attribute__((packed)) LivePacket {    // 16 byte
@@ -132,7 +137,7 @@ struct Target {
 //  GLOBALA VARIABLER
 // ------------------------------------------------------------
 // Samma som radarns fabriksinställning: 100 m, mot radarn, 5 km/h, 2 s fördröjning
-static const Settings DEFAULT_SETTINGS = {100, 1, 5, 2, 0, 255, 15, 5};
+static const Settings DEFAULT_SETTINGS = {100, 1, 5, 2, 0, 255, 15, 5, 0};
 Settings settings;
 Preferences prefs;
 
@@ -189,6 +194,9 @@ uint8_t  passDistAtMax   = 0;
 uint8_t  passLastDist    = 0;
 uint8_t  passDir         = 0;
 uint16_t passFrames      = 0;
+bool     passReportHit   = false;
+uint8_t  passReportSpeed = 0;
+uint8_t  passReportDist  = 0;
 
 // UART-parser
 enum ParseState { WAIT_HEADER, READ_LEN, READ_PAYLOAD, READ_TAIL };
@@ -234,6 +242,7 @@ void clampSettings(Settings& s) {
   if (s.radarDelay > 30)    s.radarDelay = 30;
   if (s.trigCount > 10)     s.trigCount = 10;
   if (s.gapDecis < 3)       s.gapDecis = 3;
+  if (s.reportDistance > 100) s.reportDistance = 100;
 }
 
 void loadSettings() {
@@ -373,24 +382,43 @@ void finishPass() {
   if (!passActive) return;
   passActive = false;
 
-  if (passFrames < 2 || passMaxSpeed < settings.logMinSpeed) {
+  // Med rapportavstånd: hastigheten när bilen passerade linjen.
+  // Nådde bilen aldrig linjen används högsta uppmätta hastighet.
+  bool useLine = settings.reportDistance > 0 && passReportHit;
+  uint8_t speed = useLine ? passReportSpeed : passMaxSpeed;
+
+  if (passFrames < 2 || speed < settings.logMinSpeed) {
     return;   // för kort eller för långsam, troligen brus
   }
 
   PassRecord r;
   r.time     = nowValue();
-  r.speed    = passMaxSpeed;
-  r.distance = passDistAtMax;
+  r.speed    = speed;
+  r.distance = useLine ? passReportDist : passDistAtMax;
   r.dir      = passDir;
-  r.flags    = timeSynced ? 0 : FLAG_UNSYNCED;
+  r.flags    = (timeSynced ? 0 : FLAG_UNSYNCED) | (useLine ? FLAG_REPORTLINE : 0);
 
   bool ok = logAppend(r);
-  lastPassSpeed = passMaxSpeed;
-  Serial.printf("PASSAGE #%lu: %u km/h vid %u m, %s%s\n", (unsigned long)recordCount, r.speed, r.distance,
+  lastPassSpeed = speed;
+  Serial.printf("PASSAGE #%lu: %u km/h vid %u m%s (max %u km/h), %s%s\n", (unsigned long)recordCount,
+                r.speed, r.distance, useLine ? " (rapportlinjen)" : "", passMaxSpeed,
                 r.dir ? "MOT radarn" : "FRAN radarn", ok ? "" : "  (EJ SPARAD, loggen full)");
   led(0, 0, 40);
   delay(30);
   led(0, 0, 0);
+}
+
+// Har bilen passerat rapportlinjen i den här bilden?
+void checkReportLine(const Target& t) {
+  if (settings.reportDistance == 0 || passReportHit) return;
+  bool approaching = (t.dir == TARGET_DIR_APPROACH);
+  bool crossed = approaching ? (t.distance <= settings.reportDistance)
+                             : (t.distance >= settings.reportDistance);
+  if (crossed) {
+    passReportHit   = true;
+    passReportSpeed = t.speed;
+    passReportDist  = t.distance;
+  }
 }
 
 void startPass(const Target& t) {
@@ -401,6 +429,14 @@ void startPass(const Target& t) {
   passDir       = (t.dir == TARGET_DIR_APPROACH) ? 1 : 0;
   passFrames    = 1;
   passLastSeenMs = millis();
+  passReportHit = false;
+  // Börjar bilen redan innanför linjen räknas den inte som passerad vid linjen
+  if (settings.reportDistance > 0) {
+    bool approaching = (t.dir == TARGET_DIR_APPROACH);
+    bool inside = approaching ? (t.distance <= settings.reportDistance)
+                              : (t.distance >= settings.reportDistance);
+    if (!inside) checkReportLine(t);
+  }
 }
 
 void handleTargets(const Target* targets, uint8_t n) {
@@ -437,6 +473,7 @@ void handleTargets(const Target* targets, uint8_t n) {
   passFrames++;
   passLastSeenMs = millis();
   passLastDist   = t.distance;
+  checkReportLine(t);
   if (t.speed > passMaxSpeed) {
     passMaxSpeed  = t.speed;
     passDistAtMax = t.distance;
@@ -645,9 +682,9 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 class SettingsCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& info) override {
     NimBLEAttValue v = c->getValue();
-    if (v.size() != sizeof(Settings)) return;
-    Settings s;
-    memcpy(&s, v.data(), sizeof(Settings));
+    if (v.size() < 8) return;
+    Settings s = settings;
+    memcpy(&s, v.data(), v.size() < sizeof(Settings) ? v.size() : sizeof(Settings));
     clampSettings(s);
     bool sensChanged = (s.trigCount != settings.trigCount) || (s.snr != settings.snr);
     settings = s;
@@ -922,8 +959,14 @@ input,select{font-size:15px;padding:6px;border-radius:8px;border:1px solid rgba(
 <label>Radarns min-hastighet<input id="s_min" type="number" min="0" max="120"></label>
 <label>Spara passager över (km/h)<input id="s_log" type="number" min="0" max="200"></label>
 <label>Paus innan passage avslutas (s)<input id="s_gap" type="number" min="0.3" max="25" step="0.1"></label>
+<label>Rapportavstånd (m, 0 = högsta)<input id="s_rep" type="number" min="0" max="100"></label>
 <button class="btn" onclick="saveS()">Spara inställningar</button>
 <button class="btn sec" onclick="clr()">Rensa loggen</button></div>
+<div class="card"><h2>Uppdatera firmware</h2>
+<p class="st" style="text-align:left">Välj filen <b>radarlogger-x.y.z-ota.bin</b>. Loggen och inställningarna finns kvar.</p>
+<input id="otaf" type="file" accept=".bin" style="width:100%">
+<button class="btn" onclick="ota()">Ladda upp och starta om</button>
+<p class="st" id="otast"></p></div>
 <p class="st">Firmware <span id="fw"></span></p>
 </main><script>
 const $=id=>document.getElementById(id);
@@ -939,9 +982,16 @@ $('name').textContent=r.name;$('fw').textContent=r.fw}catch(e){$('st').textConte
 async function rec(){try{const a=await(await fetch('/recent?n=15')).json();
 $('rec').innerHTML=a.map(x=>'<tr><td>'+fmt(x[0],x[4])+'</td><td>'+x[1]+'</td><td>'+x[2]+'</td><td>'+(x[3]?'mot':'från')+'</td></tr>').join('')}catch(e){}}
 async function loadS(){const s=await(await fetch('/settings')).json();
-$('s_dir').value=s.direction;$('s_max').value=s.maxDistance;$('s_min').value=s.radarMinSpeed;$('s_log').value=s.logMinSpeed;$('s_gap').value=s.gapDecis/10}
-async function saveS(){const q=new URLSearchParams({direction:$('s_dir').value,maxDistance:$('s_max').value,radarMinSpeed:$('s_min').value,logMinSpeed:$('s_log').value,gapDecis:Math.round($('s_gap').value*10)});
+$('s_dir').value=s.direction;$('s_max').value=s.maxDistance;$('s_min').value=s.radarMinSpeed;$('s_log').value=s.logMinSpeed;$('s_gap').value=s.gapDecis/10;$('s_rep').value=s.reportDistance}
+async function saveS(){const q=new URLSearchParams({direction:$('s_dir').value,maxDistance:$('s_max').value,radarMinSpeed:$('s_min').value,logMinSpeed:$('s_log').value,gapDecis:Math.round($('s_gap').value*10),reportDistance:$('s_rep').value});
 await fetch('/settings?'+q,{method:'POST'});alert('Sparat')}
+function ota(){const f=$('otaf').files[0];if(!f){alert('Välj en fil först');return}
+if(!f.name.includes('ota')&&!confirm('Filnamnet innehåller inte "ota". Fortsätta ändå?'))return;
+const fd=new FormData();fd.append('firmware',f,f.name);const x=new XMLHttpRequest();
+x.upload.onprogress=e=>{if(e.lengthComputable)$('otast').textContent='Laddar upp '+Math.round(e.loaded*100/e.total)+' %'};
+x.onload=()=>{$('otast').textContent=x.status==200?'Klart! Radarloggern startar om. Anslut igen om en minut.':'Fel: '+x.responseText};
+x.onerror=()=>{$('otast').textContent='Uppladdningen misslyckades'};
+x.open('POST','/update');x.send(fd)}
 async function clr(){if(confirm('Rensa ALLA sparade passager?')){await fetch('/clear',{method:'POST'});rec()}}
 live();rec();loadS();setInterval(live,300);setInterval(rec,3000);
 </script></body></html>)HTML";
@@ -1045,9 +1095,9 @@ void webGetSettings() {
   char buf[200];
   snprintf(buf, sizeof(buf),
     "{\"maxDistance\":%u,\"direction\":%u,\"radarMinSpeed\":%u,\"radarDelay\":%u,"
-    "\"trigCount\":%u,\"snr\":%u,\"gapDecis\":%u,\"logMinSpeed\":%u}",
+    "\"trigCount\":%u,\"snr\":%u,\"gapDecis\":%u,\"logMinSpeed\":%u,\"reportDistance\":%u}",
     settings.maxDistance, settings.direction, settings.radarMinSpeed, settings.radarDelay,
-    settings.trigCount, settings.snr, settings.gapDecis, settings.logMinSpeed);
+    settings.trigCount, settings.snr, settings.gapDecis, settings.logMinSpeed, settings.reportDistance);
   web.send(200, "application/json", buf);
 }
 
@@ -1058,6 +1108,7 @@ void webPostSettings() {
   if (web.hasArg("radarMinSpeed")) s.radarMinSpeed = web.arg("radarMinSpeed").toInt();
   if (web.hasArg("logMinSpeed"))   s.logMinSpeed   = web.arg("logMinSpeed").toInt();
   if (web.hasArg("gapDecis"))      s.gapDecis      = web.arg("gapDecis").toInt();
+  if (web.hasArg("reportDistance")) s.reportDistance = web.arg("reportDistance").toInt();
   clampSettings(s);
   settings = s;
   reqApplySettings = true;
@@ -1067,6 +1118,40 @@ void webPostSettings() {
 void webClear() {
   reqClearLog = true;
   web.send(200, "text/plain", "OK");
+}
+
+// Uppdatering via WiFi: tar emot app-filen (…-ota.bin) och skriver den
+// till den lediga app-platsen. Loggen och inställningarna påverkas inte.
+bool otaOk = false;
+void webUpdateDone() {
+  web.sendHeader("Connection", "close");
+  if (otaOk && !Update.hasError()) {
+    web.send(200, "text/plain", "OK");
+    Serial.println("Uppdatering: klar, startar om");
+    delay(800);
+    ESP.restart();
+  } else {
+    web.send(500, "text/plain", String("Uppdateringen misslyckades: ") + Update.errorString());
+  }
+}
+
+void webUpdateUpload() {
+  HTTPUpload& up = web.upload();
+  if (up.status == UPLOAD_FILE_START) {
+    otaOk = false;
+    Serial.printf("Uppdatering: tar emot %s\n", up.filename.c_str());
+    finishPass();
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
+  } else if (up.status == UPLOAD_FILE_WRITE) {
+    if (Update.write(up.buf, up.currentSize) != up.currentSize) Update.printError(Serial);
+  } else if (up.status == UPLOAD_FILE_END) {
+    otaOk = Update.end(true);
+    if (!otaOk) Update.printError(Serial);
+    Serial.printf("Uppdatering: %u byte mottagna\n", up.totalSize);
+  } else if (up.status == UPLOAD_FILE_ABORTED) {
+    Update.abort();
+    otaOk = false;
+  }
 }
 
 void wifiInit() {
@@ -1081,6 +1166,7 @@ void wifiInit() {
   web.on("/settings",  HTTP_GET,  webGetSettings);
   web.on("/settings",  HTTP_POST, webPostSettings);
   web.on("/clear",     HTTP_POST, webClear);
+  web.on("/update",    HTTP_POST, webUpdateDone, webUpdateUpload);
   web.begin();
   Serial.printf("WiFi: natverk \"%s\", losenord \"%s\", oppna http://%s\n",
                 deviceName, WIFI_PASSWORD, WiFi.softAPIP().toString().c_str());

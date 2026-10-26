@@ -78,6 +78,7 @@ class PassRecord {
   });
 
   bool get timeKnown => flags & 0x01 == 0;
+  bool get atReportLine => flags & 0x02 != 0;
 
   DateTime? get dateTime =>
       timeKnown ? DateTime.fromMillisecondsSinceEpoch(time * 1000) : null;
@@ -99,7 +100,7 @@ class PassRecord {
   }
 }
 
-/// Inställningar, 8 byte.
+/// Inställningar, 9 byte (äldre firmware: 8 byte, utan rapportavstånd).
 class RadarSettings {
   int maxDistance;   // 10–100 m
   int direction;     // 0 = från, 1 = mot, 2 = båda
@@ -109,6 +110,8 @@ class RadarSettings {
   int snr;           // 255 = ändra inte
   int gapDecis;      // tiondels sekunder
   int logMinSpeed;   // km/h
+  int reportDistance; // 0 = högsta hastighet, annars hastighet vid detta avstånd (m)
+  final bool hasReportDistance;
 
   RadarSettings({
     required this.maxDistance,
@@ -119,6 +122,8 @@ class RadarSettings {
     required this.snr,
     required this.gapDecis,
     required this.logMinSpeed,
+    this.reportDistance = 0,
+    this.hasReportDistance = false,
   });
 
   static RadarSettings? parse(List<int> v) {
@@ -132,6 +137,8 @@ class RadarSettings {
       snr: v[5],
       gapDecis: v[6],
       logMinSpeed: v[7],
+      reportDistance: v.length >= 9 ? v[8] : 0,
+      hasReportDistance: v.length >= 9,
     );
   }
 
@@ -144,6 +151,7 @@ class RadarSettings {
         snr.clamp(0, 255),
         gapDecis.clamp(3, 250),
         logMinSpeed.clamp(0, 255),
+        if (hasReportDistance) reportDistance.clamp(0, 100),
       ];
 
   RadarSettings copy() => RadarSettings(
@@ -155,6 +163,8 @@ class RadarSettings {
         snr: snr,
         gapDecis: gapDecis,
         logMinSpeed: logMinSpeed,
+        reportDistance: reportDistance,
+        hasReportDistance: hasReportDistance,
       );
 }
 
