@@ -1,0 +1,17 @@
+# Flutter
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+# Plattformsmappar genereras av byggskriptet
+android/
+ios/
+linux/
+macos/
+windows/
+web/
+test/
+*.iml
+.idea/

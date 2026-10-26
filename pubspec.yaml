@@ -1,0 +1,17 @@
+name: radarlogger
+description: Radarlogger – app för den fristående LD2451-radarloggern.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_blue_plus: 1.34.5
+  path_provider: ^2.1.4
+  share_plus: ^10.1.4
+
+flutter:
+  uses-material-design: true
