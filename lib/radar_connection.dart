@@ -71,7 +71,25 @@ class RadarConnection extends ChangeNotifier {
     });
 
     try {
-      await device.connect(timeout: const Duration(seconds: 15), autoConnect: false);
+      // Upp till 3 försök: första anslutningen efter omstart misslyckas ibland
+      Object? lastErr;
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await device.connect(timeout: const Duration(seconds: 12), autoConnect: false);
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          info = 'Försök $attempt av 3 misslyckades, försöker igen...';
+          _notify();
+          try {
+            await device.disconnect();
+          } catch (_) {}
+          await Future.delayed(const Duration(seconds: 2));
+        }
+      }
+      if (lastErr != null) throw lastErr;
+      info = null;
 
       if (Platform.isAndroid) {
         try {
@@ -119,7 +137,13 @@ class RadarConnection extends ChangeNotifier {
       await syncTime();
       await readSettings();
     } catch (e) {
-      error = 'Kunde inte ansluta: $e';
+      error = 'Kunde inte ansluta.\n\n'
+          'Prova:\n'
+          '• Kontrollera att radarloggern har ström och är nära.\n'
+          '• Stäng av och på Bluetooth i telefonen.\n'
+          '• Om radarloggern har installerats om via USB: glöm '
+          '"$name" under Bluetooth i telefonens inställningar och anslut igen.\n\n'
+          '($e)';
       connecting = false;
       _notify();
     }

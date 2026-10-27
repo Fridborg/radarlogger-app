@@ -1,7 +1,7 @@
 /*
  * ============================================================
  *  RADARLOGGER  –  HLK-LD2451 + ESP32-S3 + Bluetooth + WiFi
- *  Version 0.3.0
+ *  Version 0.3.1
  * ============================================================
  *
  *  Fristående hastighetslogger och fordonsräknare.
@@ -51,7 +51,7 @@
 // ------------------------------------------------------------
 //  INSTÄLLNINGAR SOM DU KAN ÄNDRA
 // ------------------------------------------------------------
-#define FW_VERSION      "0.3.0"
+#define FW_VERSION      "0.3.1"
 #define DEVICE_PREFIX   "Radarlogger"   // Bluetooth-namn, följt av 4 tecken från MAC
 #define BLE_PASSKEY     123456          // 6-siffrig PIN vid parkoppling
 
@@ -183,6 +183,8 @@ uint8_t  lastTargets     = 0;
 uint32_t lastFrameMs     = 0;
 uint32_t lastAckMs       = 0;    // senaste OK-svar från radarn
 uint32_t lastHealthMs    = 0;
+volatile int bleConnCount = 0;
+uint32_t lastAdvCheckMs  = 0;
 uint8_t  lastPassSpeed   = 0;
 uint32_t lastLiveNotify  = 0;
 
@@ -655,16 +657,24 @@ void updateInfoCharacteristic() {
 
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* s, NimBLEConnInfo& info) override {
+    bleConnCount++;
     bleConnected  = true;
     bleConnHandle = info.getConnHandle();
     bleMtu        = 23;
-    Serial.println("Bluetooth: ansluten");
+    Serial.printf("Bluetooth: ansluten (%d anslutning%s)\n", bleConnCount, bleConnCount == 1 ? "" : "ar");
+    // Fortsätt annonsera, så att telefonen kan ansluta igen även om en
+    // gammal anslutning hänger kvar
+    if (bleConnCount < 3) NimBLEDevice::startAdvertising();
   }
   void onDisconnect(NimBLEServer* s, NimBLEConnInfo& info, int reason) override {
-    bleConnected  = false;
-    bleConnHandle = BLE_HS_CONN_HANDLE_NONE;
-    reqAbort      = true;
-    Serial.println("Bluetooth: frånkopplad");
+    if (bleConnCount > 0) bleConnCount--;
+    bleConnected = bleConnCount > 0;
+    if (info.getConnHandle() == bleConnHandle) {
+      bleConnHandle = BLE_HS_CONN_HANDLE_NONE;
+      reqAbort      = true;
+    }
+    Serial.printf("Bluetooth: frånkopplad (orsak 0x%02X)\n", reason & 0xFF);
+    NimBLEDevice::startAdvertising();
   }
   void onMTUChange(uint16_t mtu, NimBLEConnInfo& info) override {
     bleMtu = mtu;
@@ -712,6 +722,7 @@ class LogCtrlCallbacks : public NimBLECharacteristicCallbacks {
     const uint8_t* d = v.data();
     switch (d[0]) {
       case 0x01:   // starta nedladdning: 01 + startindex (uint32)
+        bleConnHandle = info.getConnHandle();   // skicka till den som frågade
         reqDownloadFrom = 0;
         if (v.size() >= 5) memcpy((void*)&reqDownloadFrom, d + 1, 4);
         reqDownload = true;
@@ -1220,6 +1231,15 @@ void loop() {
   web.handleClient();
 #endif
   handleBleRequests();
+
+  // Säkerhetsnät: se till att Bluetooth alltid annonserar
+  if (millis() - lastAdvCheckMs > 10000) {
+    lastAdvCheckMs = millis();
+    if (bleConnCount < 3 && !NimBLEDevice::getAdvertising()->isAdvertising()) {
+      Serial.println("Bluetooth: startar annonsering igen");
+      NimBLEDevice::startAdvertising();
+    }
+  }
   downloadTick();
 
   // Live-data: 5 gånger per sekund när någon är ansluten, annars var 2:a sekund
