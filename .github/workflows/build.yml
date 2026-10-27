@@ -30,11 +30,6 @@ jobs:
           flutter-version: "3.29.3"
           cache: true
 
-      - name: Fast signeringsnyckel (så att nya versioner kan installeras ovanpå gamla)
-        run: |
-          mkdir -p ~/.android
-          cp tool/signing/test.keystore ~/.android/debug.keystore
-
       - name: Skapa Android-projekt
         run: |
           flutter create --platforms=android --org se.radarskylt --project-name radarlogger .
@@ -51,6 +46,11 @@ jobs:
           flutter build apk --release
           mkdir -p out
           cp build/app/outputs/flutter-apk/app-release.apk out/radarlogger.apk
+
+      - name: Kontrollera att appen är signerad med den fasta nyckeln
+        run: |
+          keytool -printcert -jarfile out/radarlogger.apk | tee cert.txt
+          grep -q "E7:73:8D:77:DC:47:ED:EE:8C:84:34:2A:8C:13:BC:B8:8B:5C:69:5E:8D:1C:0D:4B:8F:80:44:02:53:A8:9B:1B" cert.txt
 
       - uses: actions/upload-artifact@v4
         with:
