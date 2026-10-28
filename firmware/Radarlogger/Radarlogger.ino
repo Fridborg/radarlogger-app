@@ -1,7 +1,7 @@
 /*
  * ============================================================
  *  RADARLOGGER  –  HLK-LD2451 + ESP32-S3 + Bluetooth + WiFi
- *  Version 0.3.1
+ *  Version 0.4.0  (med LED-skylt: två P10-paneler, se Skylt.h)
  * ============================================================
  *
  *  Fristående hastighetslogger och fordonsräknare.
@@ -27,6 +27,10 @@
  *      LD2451 TX   -> GPIO 18   (ESP tar emot)
  *      LD2451 RX   -> GPIO 17   (ESP skickar)
  *
+ *  LED-SKYLT (två P10 32x16 RGB, HUB75) -> se Skylt.h och README.
+ *      Kräver biblioteket "ESP32 HUB75 LED MATRIX PANEL DMA Display" 3.x
+ *      och flaggan NO_GFX (eller Adafruit GFX installerat).
+ *
  *  Arduino IDE-inställningar (Verktyg-menyn):
  *      Board:            ESP32S3 Dev Module
  *      Flash Size:       16MB
@@ -51,7 +55,7 @@
 // ------------------------------------------------------------
 //  INSTÄLLNINGAR SOM DU KAN ÄNDRA
 // ------------------------------------------------------------
-#define FW_VERSION      "0.3.1"
+#define FW_VERSION      "0.4.0"
 #define DEVICE_PREFIX   "Radarlogger"   // Bluetooth-namn, följt av 4 tecken från MAC
 #define BLE_PASSKEY     123456          // 6-siffrig PIN vid parkoppling
 
@@ -217,6 +221,8 @@ static const uint8_t DATA_TAIL[4] = {0xF8, 0xF7, 0xF6, 0xF5};
 static const uint8_t CMD_HEAD[4]  = {0xFD, 0xFC, 0xFB, 0xFA};
 static const uint8_t CMD_TAIL[4]  = {0x04, 0x03, 0x02, 0x01};
 
+#include "Skylt.h"
+
 // ------------------------------------------------------------
 //  HJÄLPFUNKTIONER
 // ------------------------------------------------------------
@@ -256,6 +262,7 @@ void loadSettings() {
   }
   clampSettings(settings);
   tzOffsetMin = prefs.getShort("tz", 60);
+  loadSign();
 }
 
 void saveSettings() {
@@ -973,6 +980,30 @@ input,select{font-size:15px;padding:6px;border-radius:8px;border:1px solid rgba(
 <label>Rapportavstånd (m, 0 = högsta)<input id="s_rep" type="number" min="0" max="100"></label>
 <button class="btn" onclick="saveS()">Spara inställningar</button>
 <button class="btn sec" onclick="clr()">Rensa loggen</button></div>
+<div class="card"><h2>LED-skylt</h2>
+<label>Skylten används<select id="g_en"><option value="1">Ja</option><option value="0">Nej</option></select></label>
+<label>Hastighetsgräns på blå skylt<input id="g_lim" type="number" min="20" max="90" step="10"></label>
+<label>Visa blå skylt (s, 0 = aldrig)<input id="g_ls" type="number" min="0" max="10"></label>
+<label>Minst tid mellan blå skyltar (s)<input id="g_lp" type="number" min="0" max="255"></label>
+<label>Visa hastighet från (km/h)<input id="g_gr" type="number" min="0" max="200"></label>
+<label>Röd från (km/h)<input id="g_rd" type="number" min="0" max="200"></label>
+<label>Blinkande röd från (km/h)<input id="g_bl" type="number" min="0" max="250"></label>
+<label>Ljusstyrka dag (%)<input id="g_db" type="number" min="5" max="100"></label>
+<label>Ljusstyrka natt (%)<input id="g_nb" type="number" min="5" max="100"></label>
+<label>Natt från klockan<input id="g_nf" type="number" min="0" max="23"></label>
+<label>Natt till klockan<input id="g_nt" type="number" min="0" max="23"></label>
+<label>Siffran står kvar (s)<input id="g_hd" type="number" min="0" max="25" step="0.1"></label>
+<label>Stäng av panelerna efter (s, 0 = alltid på)<input id="g_ps" type="number" min="0" max="255"></label>
+<label>Vrid bilden 180°<select id="g_rot"><option value="0">Nej</option><option value="1">Ja</option></select></label>
+<label>Klockfas (omstart)<select id="g_ck"><option value="1">Standard</option><option value="0">Omvänd</option></select></label>
+<button class="btn" onclick="saveG()">Spara skylt</button>
+<h2 style="margin-top:16px">Testa panelerna</h2>
+<p class="st" style="text-align:left">Börja med <b>Färgrutor</b>. Rätt bild: vit ram, röd ruta uppe till vänster, grön uppe till höger, blå nere till vänster, gul nere till höger och en vit diagonal. Är bilden hackig eller ligger fel: tryck <b>Nästa variant</b> tills den blir rätt. Står den upp och ner: välj Vrid 180°.</p>
+<div class="grid" style="grid-template-columns:1fr 1fr">
+<button class="btn" onclick="tst(1)">Färgrutor</button><button class="btn" onclick="tst(4)">Rad för rad</button>
+<button class="btn" onclick="tst(2)">Blå skylt</button><button class="btn" onclick="tst(3)">88 km/h</button>
+<button class="btn" onclick="nxt()">Nästa variant</button><button class="btn sec" onclick="tst(0)">Avsluta test</button></div>
+<p class="st" id="gst"></p></div>
 <div class="card"><h2>Uppdatera firmware</h2>
 <p class="st" style="text-align:left">Välj filen <b>radarlogger-x.y.z-ota.bin</b>. Loggen och inställningarna finns kvar.</p>
 <input id="otaf" type="file" accept=".bin" style="width:100%">
@@ -1003,8 +1034,14 @@ x.upload.onprogress=e=>{if(e.lengthComputable)$('otast').textContent='Laddar upp
 x.onload=()=>{$('otast').textContent=x.status==200?'Klart! Radarloggern startar om. Anslut igen om en minut.':'Fel: '+x.responseText};
 x.onerror=()=>{$('otast').textContent='Uppladdningen misslyckades'};
 x.open('POST','/update');x.send(fd)}
+const G={en:'enabled',lim:'limit',ls:'limitSecs',lp:'limitPause',gr:'green',rd:'red',bl:'blink',db:'dayBright',nb:'nightBright',nf:'nightFrom',nt:'nightTo',ps:'powerSave',rot:'rotate',ck:'clkPhase'};
+async function loadG(){const s=await(await fetch('/sign')).json();for(const k in G)$('g_'+k).value=s[G[k]];$('g_hd').value=s.holdDecis/10;$('gst').textContent=s.map+(s.ok?'':' · PANELERNA EJ IGÅNG')}
+async function saveG(){const q=new URLSearchParams();for(const k in G)q.set(G[k],$('g_'+k).value);q.set('holdDecis',Math.round($('g_hd').value*10));
+const r=await(await fetch('/sign?'+q,{method:'POST'})).text();alert(r);loadG()}
+async function tst(m){await fetch('/signtest?m='+m,{method:'POST'});loadG()}
+async function nxt(){await fetch('/signtest?m=1',{method:'POST'});$('gst').textContent=await(await fetch('/signnext',{method:'POST'})).text()}
 async function clr(){if(confirm('Rensa ALLA sparade passager?')){await fetch('/clear',{method:'POST'});rec()}}
-live();rec();loadS();setInterval(live,300);setInterval(rec,3000);
+live();rec();loadS();loadG();setInterval(live,300);setInterval(rec,3000);
 </script></body></html>)HTML";
 
 void webRoot() {
@@ -1126,6 +1163,51 @@ void webPostSettings() {
   web.send(200, "text/plain", "OK");
 }
 
+void webGetSign() {
+  char buf[420];
+  snprintf(buf, sizeof(buf),
+    "{\"enabled\":%u,\"limit\":%u,\"limitSecs\":%u,\"limitPause\":%u,\"green\":%u,\"red\":%u,"
+    "\"blink\":%u,\"dayBright\":%u,\"nightBright\":%u,\"nightFrom\":%u,\"nightTo\":%u,"
+    "\"holdDecis\":%u,\"mapCombo\":%u,\"rotate\":%u,\"clkPhase\":%u,\"powerSave\":%u,"
+    "\"ok\":%s,\"test\":%u,\"map\":\"%s\"}",
+    sign.enabled, sign.limit, sign.limitSecs, sign.limitPause, sign.green, sign.red, sign.blink,
+    sign.dayBright, sign.nightBright, sign.nightFrom, sign.nightTo, sign.holdDecis, sign.mapCombo,
+    sign.rotate, sign.clkPhase, sign.powerSave, hub ? "true" : "false", testMode, mapComboText().c_str());
+  web.send(200, "application/json", buf);
+}
+
+void webPostSign() {
+  SignSettings s = sign;
+  auto get = [](const char* k, uint8_t& v) { if (web.hasArg(k)) v = (uint8_t)constrain(web.arg(k).toInt(), 0, 255); };
+  get("enabled", s.enabled);   get("limit", s.limit);       get("limitSecs", s.limitSecs);
+  get("limitPause", s.limitPause); get("green", s.green);   get("red", s.red);
+  get("blink", s.blink);       get("dayBright", s.dayBright); get("nightBright", s.nightBright);
+  get("nightFrom", s.nightFrom); get("nightTo", s.nightTo); get("holdDecis", s.holdDecis);
+  get("mapCombo", s.mapCombo); get("rotate", s.rotate);     get("clkPhase", s.clkPhase);
+  get("powerSave", s.powerSave);
+  clampSign(s);
+  bool restart = (s.clkPhase != sign.clkPhase) || (s.enabled != sign.enabled);
+  sign = s;
+  saveSign();
+  lastFrameHash = 0;
+  if (restart) {
+    web.send(200, "text/plain", "Sparat. Startar om...");
+    delay(500);
+    ESP.restart();
+  }
+  web.send(200, "text/plain", "Sparat");
+}
+
+void webSignTest() {
+  signSetTest(web.hasArg("m") ? web.arg("m").toInt() : 0);
+  web.send(200, "text/plain", "OK");
+}
+
+void webSignNext() {
+  signNextCombo();
+  web.send(200, "text/plain", mapComboText());
+}
+
 void webClear() {
   reqClearLog = true;
   web.send(200, "text/plain", "OK");
@@ -1177,6 +1259,10 @@ void wifiInit() {
   web.on("/settings",  HTTP_GET,  webGetSettings);
   web.on("/settings",  HTTP_POST, webPostSettings);
   web.on("/clear",     HTTP_POST, webClear);
+  web.on("/sign",      HTTP_GET,  webGetSign);
+  web.on("/sign",      HTTP_POST, webPostSign);
+  web.on("/signtest",  HTTP_POST, webSignTest);
+  web.on("/signnext",  HTTP_POST, webSignNext);
   web.on("/update",    HTTP_POST, webUpdateDone, webUpdateUpload);
   web.begin();
   Serial.printf("WiFi: natverk \"%s\", losenord \"%s\", oppna http://%s\n",
@@ -1212,6 +1298,7 @@ void setup() {
   radarApplySettings(false);
 #endif
 
+  signInit();
   bleInit();
   wifiInit();
   led(0, 0, 0);
@@ -1241,6 +1328,7 @@ void loop() {
     }
   }
   downloadTick();
+  signTick();
 
   // Live-data: 5 gånger per sekund när någon är ansluten, annars var 2:a sekund
   uint32_t interval = bleConnected ? 200 : 2000;

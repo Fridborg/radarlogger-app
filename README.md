@@ -16,7 +16,7 @@ Bluetooth-PIN vid parkoppling: `123456`.
 GitHub Actions bygger appen automatiskt vid varje ändring (`.github/workflows/build.yml`).
 
 ## Firmware
-- `firmware/Radarlogger/` – koden för radarloggern (ESP32-S3 + LD2451)
+- `firmware/Radarlogger/` – koden för radarloggern (ESP32-S3 + LD2451) med LED-skylt, se [SKYLT.md](firmware/Radarlogger/SKYLT.md) för koppling och test
 - `firmware/RadarSimulator/` – låtsasradar för test på ESP nummer två
 - `firmware/bin/` – färdiga filer:
   - `radarlogger-x.y.z.bin` – hel installation via USB (ESPHome Web eller esptool-js, adress `0x0`). Raderar loggen.
