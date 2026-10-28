@@ -66,6 +66,8 @@ jobs:
             radarlogger.apk – appen, installera på telefonen.
             radarlogger-x.y.z-ota.bin – ny firmware till radarloggern, laddas upp via http://192.168.4.1 (loggen finns kvar).
             radarlogger-x.y.z.bin – hel installation via USB med ESPHome Web (raderar loggen).
+            radarsimulator-x.y.z.bin – låtsasradar till ESP nr 2, installeras via USB med ESPHome Web.
           files: |
             out/radarlogger.apk
             firmware/bin/radarlogger-*.bin
+            firmware/bin/radarsimulator-*.bin
