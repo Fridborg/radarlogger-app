@@ -1,7 +1,7 @@
 /*
  * ============================================================
  *  RADARSIMULATOR  –  låtsas vara en HLK-LD2451
- *  Version 0.1.0
+ *  Version 0.2.0
  * ============================================================
  *
  *  Kör på den ANDRA ESP32-S3:an. Den skickar exakt samma
@@ -9,6 +9,11 @@
  *  den pratar med en riktig radar. Bra för att testa hela
  *  kedjan vid skrivbordet: tolkning, räkning, logg, webbsida
  *  och Bluetooth.
+ *
+ *  STARTAR AUTOMATISKT: så fort den får ström kör den ett
+ *  program med olika trafiksituationer (fortkörare, inbromsning,
+ *  kö, möte, cykel, lång paus …) om och om igen tills du stoppar.
+ *  Stoppa/starta: knappen BOOT på kortet, eller webbsidan.
  *
  *  Styrs från mobilen:
  *    WiFi "RadarSim-XXXX", lösenord "simulator1"
@@ -29,7 +34,8 @@
 #include <WiFi.h>
 #include <WebServer.h>
 
-#define FW_VERSION    "0.1.0"
+#define FW_VERSION    "0.2.0"
+#define BUTTON_PIN    0           // BOOT-knappen: start/stopp
 #define SIM_TX_PIN    17          // -> loggerns RX (GPIO 18)
 #define SIM_RX_PIN    18          // <- loggerns TX (GPIO 17)
 #define SIM_BAUD      115200
@@ -60,11 +66,15 @@ struct SimCar {
   int8_t angle;     // grader
   bool   approach;  // true = mot radarn
   float  endDist;
+  float  accel;     // km/h per sekund (minus = bromsar)
+  float  target;    // hastighet där accelerationen slutar
 };
 #define MAX_CARS 4
 SimCar cars[MAX_CARS];
 
-bool     autoMode   = true;
+// Läge: 0 = stopp, 1 = scenarier (startar vid ström på), 2 = slumpad trafik
+uint8_t  mode       = 1;
+bool     autoMode   = false;   // slumpad trafik (läge 2)
 uint8_t  autoMin    = 30;
 uint8_t  autoMax    = 80;
 uint16_t autoGapMin = 4;     // sekunder mellan bilar
@@ -78,10 +88,13 @@ WebServer web(80);
 char ssid[32];
 
 // ------------------------------------------------------------
-void addCar(float speed, bool approach, float startDist = -1, int8_t angle = 0) {
+void addCar(float speed, bool approach, float startDist = -1, int8_t angle = 0,
+            float accel = 0, float target = 0) {
   for (auto& c : cars) {
     if (!c.active) {
       c.active   = true;
+      c.accel    = accel;
+      c.target   = target;
       c.speed    = speed;
       c.approach = approach;
       c.angle    = angle;
@@ -102,6 +115,13 @@ void addCar(float speed, bool approach, float startDist = -1, int8_t angle = 0) 
 void stepCars(float dt) {
   for (auto& c : cars) {
     if (!c.active) continue;
+    if (c.accel != 0) {
+      c.speed += c.accel * dt;
+      if ((c.accel > 0 && c.speed >= c.target) || (c.accel < 0 && c.speed <= c.target)) {
+        c.speed = c.target;
+        c.accel = 0;
+      }
+    }
     float move = c.speed / 3.6f * dt;
     if (c.approach) {
       c.dist -= move;
@@ -255,6 +275,77 @@ void parseCmdByte(uint8_t c) {
 }
 
 // ------------------------------------------------------------
+//  SCENARIER  –  körs i tur och ordning, sedan börjar det om
+//  Varje händelse: efter X tiondels sekunder, en bil med
+//  hastighet, riktning, start-avstånd, acceleration och sluthastighet.
+//  (Skylten med standardinställningar: under 10 inget, grön till 59,
+//   röd 60–64, blinkande röd från 65, blå 50-skylt högst var 30:e s.)
+// ------------------------------------------------------------
+struct Ev { uint16_t atDs; uint8_t speed; bool approach; uint8_t startDist; int8_t accel; uint8_t target; };
+struct Scenario { const char* name; uint8_t pauseS; uint8_t n; Ev ev[4]; };
+
+static const Scenario SCEN[] = {
+  {"Lugn bil 35 km/h (grön)",                 8, 1, {{0, 35, true, 0, 0, 0}}},
+  {"Bil precis under gränsen 48 km/h (grön)", 8, 1, {{0, 48, true, 0, 0, 0}}},
+  {"Fortkörare 62 km/h (röd)",                8, 1, {{0, 62, true, 0, 0, 0}}},
+  {"Kraftig fortkörare 82 km/h (blinkar)",    8, 1, {{0, 82, true, 0, 0, 0}}},
+  {"Bromsar för skylten 70 -> 40 km/h",       8, 1, {{0, 70, true, 0, -12, 40}}},
+  {"Gasar på 40 -> 75 km/h",                  8, 1, {{0, 40, true, 0, 10, 75}}},
+  {"Två bilar tätt efter varandra 45 + 58",   8, 2, {{0, 45, true, 0, 0, 0}, {30, 58, true, 0, 0, 0}}},
+  {"Kö: fyra bilar 30 km/h",                  8, 4, {{0, 30, true, 0, 0, 0}, {30, 32, true, 0, 0, 0},
+                                                     {60, 29, true, 0, 0, 0}, {90, 31, true, 0, 0, 0}}},
+  {"Möte: bil mot 55 + bil från 60",          8, 2, {{0, 55, true, 0, 0, 0}, {20, 60, false, 0, 0, 0}}},
+  {"Bil FRÅN radarn 70 km/h (ska inte visas)",8, 1, {{0, 70, false, 0, 0, 0}}},
+  {"Cykel 8 km/h (ska inte visas)",           5, 1, {{0, 8, true, 40, 0, 0}}},
+  {"Moped 25 km/h nära (grön)",               8, 1, {{0, 25, true, 50, 0, 0}}},
+  {"Lång paus 40 s (skylten släcks)",        40, 0, {}},
+};
+static const uint8_t SCEN_COUNT = sizeof(SCEN) / sizeof(SCEN[0]);
+
+uint8_t  scenIdx     = 0;
+uint8_t  scenEvNext  = 0;
+uint32_t scenStartMs = 0;
+uint32_t scenDoneMs  = 0;      // när sista bilen försvann (0 = inte än)
+uint32_t scenRounds  = 0;
+
+void stopAllCars() { for (auto& c : cars) c.active = false; }
+
+void scenStart(uint8_t i) {
+  scenIdx = i % SCEN_COUNT;
+  scenEvNext = 0;
+  scenStartMs = millis();
+  scenDoneMs = 0;
+  Serial.printf("Scenario %u/%u: %s\n", scenIdx + 1, SCEN_COUNT, SCEN[scenIdx].name);
+}
+
+bool anyCarActive() { for (auto& c : cars) if (c.active) return true; return false; }
+
+void scenTick() {
+  uint32_t now = millis();
+  const Scenario& sc = SCEN[scenIdx];
+  while (scenEvNext < sc.n && now - scenStartMs >= (uint32_t)sc.ev[scenEvNext].atDs * 100) {
+    const Ev& e = sc.ev[scenEvNext++];
+    addCar(e.speed, e.approach, e.startDist ? e.startDist : -1, (int8_t)random(-6, 7),
+           e.accel, e.target);
+  }
+  if (scenEvNext < sc.n || anyCarActive()) return;
+  if (scenDoneMs == 0) scenDoneMs = now;
+  if (now - scenDoneMs >= (uint32_t)sc.pauseS * 1000) {
+    if (scenIdx + 1 >= SCEN_COUNT) scenRounds++;
+    scenStart(scenIdx + 1);
+  }
+}
+
+void setMode(uint8_t m) {
+  mode = m > 2 ? 0 : m;
+  autoMode = (mode == 2);
+  stopAllCars();
+  if (mode == 1) scenStart(0);
+  nextAutoMs = millis() + 1000;
+  Serial.printf("Läge: %s\n", mode == 0 ? "STOPP" : mode == 1 ? "scenarier" : "slumpad trafik");
+}
+
+// ------------------------------------------------------------
 //  WEBBSIDA FÖR ATT STYRA SIMULATORN
 // ------------------------------------------------------------
 static const char PAGE[] = R"HTML(<!doctype html>
@@ -277,14 +368,19 @@ input{font-size:15px;padding:6px;border-radius:8px;border:1px solid rgba(128,128
 <h1>Radarsimulator (LD2451)</h1>
 <div class="card"><div class="big" id="spd">0</div><p class="st" style="text-align:center">km/h skickas just nu</p>
 <p class="st" id="st"></p></div>
+<div class="card"><h2>Automatik</h2>
+<div class="big" style="font-size:22px" id="mode">–</div>
+<p class="st" id="scen" style="text-align:center"></p>
+<div class="row"><button class="btn" onclick="md(1)">Kör scenarier</button><button class="btn" onclick="md(2)">Slumpad trafik</button></div>
+<button class="btn" style="background:#dc2626" onclick="md(0)">STOPP</button>
+<p class="st">Startar själv med scenarier när simulatorn får ström. BOOT-knappen på kortet växlar stopp / start.</p></div>
 <div class="card"><h2>Skicka en bil</h2>
 <label>Hastighet (km/h)<input id="v" type="number" value="55" min="1" max="120"></label>
 <div class="row"><button class="btn" onclick="car(1)">Bil MOT radarn</button><button class="btn" onclick="car(0)">Bil FRÅN radarn</button></div>
 <button class="btn" onclick="go('/two')">Två bilar tätt efter varandra</button>
 <button class="btn" onclick="go('/slow')">Långsam bil (8 km/h)</button>
 <button class="btn" onclick="go('/stop')">Stoppa all trafik</button></div>
-<div class="card"><h2>Automatisk trafik</h2>
-<label>På<input id="auto" type="checkbox" style="width:auto"></label>
+<div class="card"><h2>Slumpad trafik</h2>
 <label>Lägsta hastighet<input id="amin" type="number"></label>
 <label>Högsta hastighet<input id="amax" type="number"></label>
 <label>Sekunder mellan bilar (min)<input id="gmin" type="number"></label>
@@ -294,20 +390,25 @@ input{font-size:15px;padding:6px;border-radius:8px;border:1px solid rgba(128,128
 const $=id=>document.getElementById(id);
 async function go(u){await fetch(u,{method:'POST'})}
 function car(a){go('/car?v='+$('v').value+'&a='+a)}
-async function saveA(){const q=new URLSearchParams({on:$('auto').checked?1:0,min:$('amin').value,max:$('amax').value,gmin:$('gmin').value,gmax:$('gmax').value});await fetch('/auto?'+q,{method:'POST'})}
+async function md(m){await fetch('/mode?m='+m,{method:'POST'})}
+async function saveA(){const q=new URLSearchParams({min:$('amin').value,max:$('amax').value,gmin:$('gmin').value,gmax:$('gmax').value});await fetch('/auto?'+q,{method:'POST'})}
 async function st(first){try{const s=await(await fetch('/status')).json();$('spd').textContent=s.speed;
 $('st').innerHTML='Bilar i rörelse: '+s.active+' · skickade totalt: '+s.sent+'<br>Radarinställning från loggern: max '+s.maxDist+' m, riktning '+['från','mot','båda'][s.dir]+', min '+s.minSpeed+' km/h<br>Kommandon mottagna: '+s.cmds;
-if(first){$('auto').checked=s.auto;$('amin').value=s.amin;$('amax').value=s.amax;$('gmin').value=s.gmin;$('gmax').value=s.gmax}}catch(e){}}
+$('mode').textContent=['STOPPAD','Kör scenarier','Slumpad trafik'][s.mode];
+$('scen').textContent=s.mode==1?('Scenario '+s.si+' av '+s.sn+': '+s.scen+' · varv '+s.rounds):'';
+if(first){$('amin').value=s.amin;$('amax').value=s.amax;$('gmin').value=s.gmin;$('gmax').value=s.gmax}}catch(e){}}
 st(true);setInterval(st,300);
 </script></body></html>)HTML";
 
 void webStatus() {
   uint8_t active = 0;
   for (auto& c : cars) if (c.active) active++;
-  char buf[260];
+  char buf[420];
   snprintf(buf, sizeof(buf),
-    "{\"speed\":%u,\"active\":%u,\"sent\":%lu,\"maxDist\":%u,\"dir\":%u,\"minSpeed\":%u,"
+    "{\"mode\":%u,\"si\":%u,\"sn\":%u,\"scen\":\"%s\",\"rounds\":%lu,"
+    "\"speed\":%u,\"active\":%u,\"sent\":%lu,\"maxDist\":%u,\"dir\":%u,\"minSpeed\":%u,"
     "\"cmds\":%lu,\"auto\":%s,\"amin\":%u,\"amax\":%u,\"gmin\":%u,\"gmax\":%u}",
+    mode, scenIdx + 1, SCEN_COUNT, SCEN[scenIdx].name, (unsigned long)scenRounds,
     lastSpeedSent, active, (unsigned long)carsSent, cfgMaxDist, cfgDir > 2 ? 2 : cfgDir,
     cfgMinSpeed, (unsigned long)cmdCount, autoMode ? "true" : "false",
     autoMin, autoMax, autoGapMin, autoGapMax);
@@ -336,12 +437,16 @@ void webSlow() {
 }
 
 void webStop() {
-  for (auto& c : cars) c.active = false;
+  setMode(0);
+  web.send(200, "text/plain", "OK");
+}
+
+void webMode() {
+  setMode(web.hasArg("m") ? web.arg("m").toInt() : 0);
   web.send(200, "text/plain", "OK");
 }
 
 void webAuto() {
-  if (web.hasArg("on"))   autoMode   = web.arg("on").toInt() == 1;
   if (web.hasArg("min"))  autoMin    = constrain(web.arg("min").toInt(), 1, 200);
   if (web.hasArg("max"))  autoMax    = constrain(web.arg("max").toInt(), autoMin, 200);
   if (web.hasArg("gmin")) autoGapMin = constrain(web.arg("gmin").toInt(), 1, 3600);
@@ -372,11 +477,14 @@ void setup() {
   web.on("/slow",   HTTP_POST, webSlow);
   web.on("/stop",   HTTP_POST, webStop);
   web.on("/auto",   HTTP_POST, webAuto);
+  web.on("/mode",   HTTP_POST, webMode);
   web.begin();
 
   Serial.printf("WiFi: \"%s\", losenord \"%s\", oppna http://%s\n",
                 ssid, WIFI_PASS, WiFi.softAPIP().toString().c_str());
-  nextAutoMs = millis() + 3000;
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  delay(3000);                 // ge loggern tid att starta
+  setMode(1);                  // kör scenarier direkt
 }
 
 void loop() {
@@ -385,6 +493,18 @@ void loop() {
   while (Serial1.available()) parseCmdByte((uint8_t)Serial1.read());
 
   uint32_t now = millis();
+
+  // BOOT-knappen: stopp <-> scenarier
+  static bool lastBtn = true;
+  static uint32_t btnMs = 0;
+  bool btn = digitalRead(BUTTON_PIN);
+  if (!btn && lastBtn && now - btnMs > 300) {
+    btnMs = now;
+    setMode(mode == 0 ? 1 : 0);
+  }
+  lastBtn = btn;
+
+  if (mode == 1) scenTick();
 
   if (autoMode && now > nextAutoMs) {
     addCar(random(autoMin, autoMax + 1), true, -1, (int8_t)random(-8, 9));
@@ -397,7 +517,10 @@ void loop() {
     lastFrameMs = now;
     stepCars(dt);
     if (!configMode) sendFrame();   // riktig radar skickar inga mål i konfig-läge
-    rgbLedWrite(LED_PIN, 0, lastSpeedSent ? 25 : 0, 0);
+    // LED: grön = bil skickas, svagt blå = kör men ingen bil just nu, röd = stoppad
+    if (mode == 0)          rgbLedWrite(LED_PIN, 20, 0, 0);
+    else if (lastSpeedSent) rgbLedWrite(LED_PIN, 0, 25, 0);
+    else                    rgbLedWrite(LED_PIN, 0, 0, 6);
   }
 
   delay(1);
