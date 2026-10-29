@@ -1,7 +1,7 @@
 /*
  * ============================================================
  *  RADARSIMULATOR  –  låtsas vara en HLK-LD2451
- *  Version 0.2.0
+ *  Version 0.2.1
  * ============================================================
  *
  *  Kör på den ANDRA ESP32-S3:an. Den skickar exakt samma
@@ -34,7 +34,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 
-#define FW_VERSION    "0.2.0"
+#define FW_VERSION    "0.2.1"
 #define BUTTON_PIN    0           // BOOT-knappen: start/stopp
 #define SIM_TX_PIN    17          // -> loggerns RX (GPIO 18)
 #define SIM_RX_PIN    18          // <- loggerns TX (GPIO 17)
