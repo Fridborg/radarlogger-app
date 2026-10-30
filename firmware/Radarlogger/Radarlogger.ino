@@ -1,7 +1,7 @@
 /*
  * ============================================================
  *  RADARLOGGER  –  HLK-LD2451 + ESP32-S3 + Bluetooth + WiFi
- *  Version 0.4.1  (med LED-skylt: två P10-paneler, se Skylt.h)
+ *  Version 0.4.2  (med LED-skylt: två P10-paneler, se Skylt.h)
  * ============================================================
  *
  *  Fristående hastighetslogger och fordonsräknare.
@@ -55,7 +55,7 @@
 // ------------------------------------------------------------
 //  INSTÄLLNINGAR SOM DU KAN ÄNDRA
 // ------------------------------------------------------------
-#define FW_VERSION      "0.4.1"
+#define FW_VERSION      "0.4.2"
 #define DEVICE_PREFIX   "Radarlogger"   // Bluetooth-namn, följt av 4 tecken från MAC
 #define BLE_PASSKEY     123456          // 6-siffrig PIN vid parkoppling
 
@@ -1005,9 +1005,11 @@ input,select{font-size:15px;padding:6px;border-radius:8px;border:1px solid rgba(
 <div class="grid" style="grid-template-columns:1fr 1fr">
 <button class="btn" onclick="tst(1)">Färgrutor</button><button class="btn" onclick="tst(4)">Rad för rad</button>
 <button class="btn" onclick="tst(2)">Blå skylt</button><button class="btn" onclick="tst(3)">88 km/h</button>
-<button class="btn" onclick="tst(5)">Gubbar</button><span></span>
-<button class="btn" onclick="nxt()">Nästa variant</button><button class="btn sec" onclick="tst(0)">Avsluta test</button></div>
-<p class="st" id="gst"></p></div>
+<button class="btn" onclick="tst(5)">Gubbar</button><button class="btn sec" onclick="tst(0)">Avsluta test</button></div>
+<p class="st" id="gst"></p>
+<details style="margin-top:12px"><summary class="st" style="text-align:left">Justera panelvariant (bara om bilden är hackig)</summary>
+<div class="grid" style="grid-template-columns:1fr 1fr">
+<button class="btn" onclick="nxt()">Nästa variant</button><button class="btn" onclick="v0()">Återställ till variant 0</button></div></details></div>
 <div class="card"><h2>Uppdatera firmware</h2>
 <p class="st" style="text-align:left">Välj filen <b>radarlogger-x.y.z-ota.bin</b>. Loggen och inställningarna finns kvar.</p>
 <input id="otaf" type="file" accept=".bin" style="width:100%">
@@ -1043,7 +1045,8 @@ async function loadG(){const s=await(await fetch('/sign')).json();for(const k in
 async function saveG(){const q=new URLSearchParams();for(const k in G)q.set(G[k],$('g_'+k).value);q.set('holdDecis',Math.round($('g_hd').value*10));q.set('speedDecis',Math.round($('g_sd').value*10));q.set('faceDecis',Math.round($('g_fd').value*10));
 const r=await(await fetch('/sign?'+q,{method:'POST'})).text();alert(r);loadG()}
 async function tst(m){await fetch('/signtest?m='+m,{method:'POST'});loadG()}
-async function nxt(){await fetch('/signtest?m=1',{method:'POST'});$('gst').textContent=await(await fetch('/signnext',{method:'POST'})).text()}
+async function v0(){await fetch('/sign?mapCombo=0',{method:'POST'});await fetch('/signtest?m=1',{method:'POST'});loadG()}
+async function nxt(){if(!confirm('Byta panelvariant? Variant 0 är rätt för dina paneler.'))return;await fetch('/signtest?m=1',{method:'POST'});$('gst').textContent=await(await fetch('/signnext',{method:'POST'})).text()}
 async function clr(){if(confirm('Rensa ALLA sparade passager?')){await fetch('/clear',{method:'POST'});rec()}}
 live();rec();loadS();loadG();setInterval(live,300);setInterval(rec,3000);
 </script></body></html>)HTML";
