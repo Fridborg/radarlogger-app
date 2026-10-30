@@ -1,7 +1,7 @@
 /*
  * ============================================================
  *  RADARLOGGER  –  HLK-LD2451 + ESP32-S3 + Bluetooth + WiFi
- *  Version 0.4.0  (med LED-skylt: två P10-paneler, se Skylt.h)
+ *  Version 0.4.1  (med LED-skylt: två P10-paneler, se Skylt.h)
  * ============================================================
  *
  *  Fristående hastighetslogger och fordonsräknare.
@@ -55,7 +55,7 @@
 // ------------------------------------------------------------
 //  INSTÄLLNINGAR SOM DU KAN ÄNDRA
 // ------------------------------------------------------------
-#define FW_VERSION      "0.4.0"
+#define FW_VERSION      "0.4.1"
 #define DEVICE_PREFIX   "Radarlogger"   // Bluetooth-namn, följt av 4 tecken från MAC
 #define BLE_PASSKEY     123456          // 6-siffrig PIN vid parkoppling
 
@@ -993,6 +993,9 @@ input,select{font-size:15px;padding:6px;border-radius:8px;border:1px solid rgba(
 <label>Natt från klockan<input id="g_nf" type="number" min="0" max="23"></label>
 <label>Natt till klockan<input id="g_nt" type="number" min="0" max="23"></label>
 <label>Siffran står kvar (s)<input id="g_hd" type="number" min="0" max="25" step="0.1"></label>
+<label>Gubbe<select id="g_sm"><option value="0">Av</option><option value="1">Glad gubbe vid OK fart</option><option value="2">Glad + ledsen gubbe</option></select></label>
+<label>Gubbläge: siffran visas (s)<input id="g_sd" type="number" min="0.5" max="25" step="0.1"></label>
+<label>Gubbläge: gubben visas (s)<input id="g_fd" type="number" min="0.5" max="25" step="0.1"></label>
 <label>Stäng av panelerna efter (s, 0 = alltid på)<input id="g_ps" type="number" min="0" max="255"></label>
 <label>Vrid bilden 180°<select id="g_rot"><option value="0">Nej</option><option value="1">Ja</option></select></label>
 <label>Klockfas (omstart)<select id="g_ck"><option value="1">Standard</option><option value="0">Omvänd</option></select></label>
@@ -1002,6 +1005,7 @@ input,select{font-size:15px;padding:6px;border-radius:8px;border:1px solid rgba(
 <div class="grid" style="grid-template-columns:1fr 1fr">
 <button class="btn" onclick="tst(1)">Färgrutor</button><button class="btn" onclick="tst(4)">Rad för rad</button>
 <button class="btn" onclick="tst(2)">Blå skylt</button><button class="btn" onclick="tst(3)">88 km/h</button>
+<button class="btn" onclick="tst(5)">Gubbar</button><span></span>
 <button class="btn" onclick="nxt()">Nästa variant</button><button class="btn sec" onclick="tst(0)">Avsluta test</button></div>
 <p class="st" id="gst"></p></div>
 <div class="card"><h2>Uppdatera firmware</h2>
@@ -1034,9 +1038,9 @@ x.upload.onprogress=e=>{if(e.lengthComputable)$('otast').textContent='Laddar upp
 x.onload=()=>{$('otast').textContent=x.status==200?'Klart! Radarloggern startar om. Anslut igen om en minut.':'Fel: '+x.responseText};
 x.onerror=()=>{$('otast').textContent='Uppladdningen misslyckades'};
 x.open('POST','/update');x.send(fd)}
-const G={en:'enabled',lim:'limit',ls:'limitSecs',lp:'limitPause',gr:'green',rd:'red',bl:'blink',db:'dayBright',nb:'nightBright',nf:'nightFrom',nt:'nightTo',ps:'powerSave',rot:'rotate',ck:'clkPhase'};
-async function loadG(){const s=await(await fetch('/sign')).json();for(const k in G)$('g_'+k).value=s[G[k]];$('g_hd').value=s.holdDecis/10;$('gst').textContent=s.map+(s.ok?'':' · PANELERNA EJ IGÅNG')}
-async function saveG(){const q=new URLSearchParams();for(const k in G)q.set(G[k],$('g_'+k).value);q.set('holdDecis',Math.round($('g_hd').value*10));
+const G={en:'enabled',lim:'limit',ls:'limitSecs',lp:'limitPause',gr:'green',rd:'red',bl:'blink',db:'dayBright',nb:'nightBright',nf:'nightFrom',nt:'nightTo',ps:'powerSave',rot:'rotate',ck:'clkPhase',sm:'smiley'};
+async function loadG(){const s=await(await fetch('/sign')).json();for(const k in G)$('g_'+k).value=s[G[k]];$('g_hd').value=s.holdDecis/10;$('g_sd').value=s.speedDecis/10;$('g_fd').value=s.faceDecis/10;$('gst').textContent=s.map+(s.ok?'':' · PANELERNA EJ IGÅNG')}
+async function saveG(){const q=new URLSearchParams();for(const k in G)q.set(G[k],$('g_'+k).value);q.set('holdDecis',Math.round($('g_hd').value*10));q.set('speedDecis',Math.round($('g_sd').value*10));q.set('faceDecis',Math.round($('g_fd').value*10));
 const r=await(await fetch('/sign?'+q,{method:'POST'})).text();alert(r);loadG()}
 async function tst(m){await fetch('/signtest?m='+m,{method:'POST'});loadG()}
 async function nxt(){await fetch('/signtest?m=1',{method:'POST'});$('gst').textContent=await(await fetch('/signnext',{method:'POST'})).text()}
@@ -1164,15 +1168,16 @@ void webPostSettings() {
 }
 
 void webGetSign() {
-  char buf[420];
+  char buf[640];
   snprintf(buf, sizeof(buf),
     "{\"enabled\":%u,\"limit\":%u,\"limitSecs\":%u,\"limitPause\":%u,\"green\":%u,\"red\":%u,"
     "\"blink\":%u,\"dayBright\":%u,\"nightBright\":%u,\"nightFrom\":%u,\"nightTo\":%u,"
     "\"holdDecis\":%u,\"mapCombo\":%u,\"rotate\":%u,\"clkPhase\":%u,\"powerSave\":%u,"
+    "\"smiley\":%u,\"speedDecis\":%u,\"faceDecis\":%u,"
     "\"ok\":%s,\"test\":%u,\"map\":\"%s\"}",
     sign.enabled, sign.limit, sign.limitSecs, sign.limitPause, sign.green, sign.red, sign.blink,
     sign.dayBright, sign.nightBright, sign.nightFrom, sign.nightTo, sign.holdDecis, sign.mapCombo,
-    sign.rotate, sign.clkPhase, sign.powerSave, hub ? "true" : "false", testMode, mapComboText().c_str());
+    sign.rotate, sign.clkPhase, sign.powerSave, sign.smiley, sign.speedDecis, sign.faceDecis, hub ? "true" : "false", testMode, mapComboText().c_str());
   web.send(200, "application/json", buf);
 }
 
@@ -1184,7 +1189,8 @@ void webPostSign() {
   get("blink", s.blink);       get("dayBright", s.dayBright); get("nightBright", s.nightBright);
   get("nightFrom", s.nightFrom); get("nightTo", s.nightTo); get("holdDecis", s.holdDecis);
   get("mapCombo", s.mapCombo); get("rotate", s.rotate);     get("clkPhase", s.clkPhase);
-  get("powerSave", s.powerSave);
+  get("powerSave", s.powerSave); get("smiley", s.smiley);
+  get("speedDecis", s.speedDecis); get("faceDecis", s.faceDecis);
   clampSign(s);
   bool restart = (s.clkPhase != sign.clkPhase) || (s.enabled != sign.enabled);
   sign = s;

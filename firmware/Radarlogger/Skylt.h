@@ -68,10 +68,14 @@ struct __attribute__((packed)) SignSettings {
   uint8_t rotate;        // 1 = vrid hela bilden 180°
   uint8_t clkPhase;      // 1 = standard, 0 = omvänd klockfas (kräver omstart)
   uint8_t powerSave;     // s utan bil innan panelerna stängs av (0 = alltid på)
+  uint8_t smiley;        // 0 = av, 1 = glad gubbe vid OK fart, 2 = glad + ledsen gubbe
+  uint8_t speedDecis;    // gubbläge: så länge siffran visas (tiondels s)
+  uint8_t faceDecis;     // gubbläge: så länge gubben visas (tiondels s)
 };
+#define SIGN_SIZE_V1 16  // storlek före gubben (0.4.0)
 
 // Pi-värdena i Home Assistant: grön 10, röd 60, blink 65, 100 % dag, 20 % natt
-static const SignSettings DEFAULT_SIGN = {1, 50, 2, 30, 10, 60, 65, 100, 20, 21, 6, 10, 0, 0, 1, 0};
+static const SignSettings DEFAULT_SIGN = {1, 50, 2, 30, 10, 60, 65, 100, 20, 21, 6, 10, 0, 0, 1, 0, 2, 15, 10};
 SignSettings sign;
 
 // ------------------------------------------------------------
@@ -174,6 +178,28 @@ static void renderSpeed(int speed, RGB c) {
   drawSmall8(CH_M, 12, 9, y, c);
   for (int i = 1; i <= 12; i++) fbSet(18 + i / 3, 31 - i, c);   // snedstreck
   drawSmall8(CH_H, 12, 24, y, c);
+}
+
+// Gubbe: rund ram, två ögon och en mun (glad = leende, ledsen = nedåtböjd)
+static void renderFace(bool happy, RGB c) {
+  fbClear();
+  for (int y = 0; y < VIS_H; y++)
+    for (int x = 0; x < VIS_W; x++) {
+      float dx = x - 15.5f, dy = y - 15.5f;
+      float d2 = dx * dx + dy * dy;
+      if (d2 >= 12.9f * 12.9f && d2 <= 15.2f * 15.2f) fbSet(x, y, c);
+    }
+  for (int y = 9; y <= 12; y++) {                // ögon 3x4
+    for (int x = 10; x <= 12; x++) fbSet(x, y, c);
+    for (int x = 19; x <= 21; x++) fbSet(x, y, c);
+  }
+  for (int x = 8; x <= 23; x++) {                // mun, 2 pixlar tjock
+    float dx = x - 15.5f;
+    float k = dx * dx / 14.0f;
+    int y = happy ? (int)lroundf(23.0f - k) : (int)lroundf(19.0f + k);
+    fbSet(x, y, c);
+    fbSet(x, y + 1, c);
+  }
 }
 
 // ------------------------------------------------------------
@@ -297,14 +323,19 @@ void clampSign(SignSettings& s) {
   if (s.mapCombo > 15) s.mapCombo = 0;
   if (s.red < s.green) s.red = s.green;
   if (s.blink < s.red) s.blink = s.red;
+  if (s.smiley > 2) s.smiley = 2;
+  if (s.speedDecis < 5) s.speedDecis = 5;
+  if (s.faceDecis < 5) s.faceDecis = 5;
   s.enabled  = s.enabled ? 1 : 0;
   s.rotate   = s.rotate ? 1 : 0;
   s.clkPhase = s.clkPhase ? 1 : 0;
 }
 
 void loadSign() {
-  if (prefs.getBytesLength("sign") == sizeof(SignSettings)) prefs.getBytes("sign", &sign, sizeof(sign));
-  else sign = DEFAULT_SIGN;
+  size_t len = prefs.getBytesLength("sign");
+  sign = DEFAULT_SIGN;
+  if (len == sizeof(SignSettings)) prefs.getBytes("sign", &sign, sizeof(sign));
+  else if (len == SIGN_SIZE_V1) prefs.getBytes("sign", &sign, SIGN_SIZE_V1);   // behåll gamla värden
   clampSign(sign);
 }
 
@@ -391,6 +422,9 @@ static void renderTest(uint32_t now) {
     case 3:
       renderSpeed(88, ((t / 1000) % 2) ? C_RED : C_GREEN);
       break;
+    case 5:
+      renderFace(((t / 1500) % 2) == 0, ((t / 1500) % 2) == 0 ? C_GREEN : C_RED);
+      break;
     case 4: { // en vit rad som vandrar nedåt, en ny rad varje halv sekund
       fbClear();
       int row = (t / 500) % 32;
@@ -448,13 +482,22 @@ void signTick() {
     if (signState == SIGN_LIMIT) {
       renderLimitSign(sign.limit);
     } else if (signState == SIGN_SPEED && shownSpeed > 0) {
-      if (shownSpeed < sign.red) {
-        renderSpeed(shownSpeed, C_GREEN);
+      bool ok = shownSpeed < sign.red;
+      // Gubbläge: växla mellan siffran och gubben
+      bool face = false;
+      if (sign.smiley == 2 || (sign.smiley == 1 && ok)) {
+        uint32_t period = ((uint32_t)sign.speedDecis + sign.faceDecis) * 100;
+        face = ((now - signStateMs) % period) >= (uint32_t)sign.speedDecis * 100;
+      }
+      if (ok) {
+        if (face) renderFace(true, C_GREEN); else renderSpeed(shownSpeed, C_GREEN);
       } else if (shownSpeed < sign.blink) {
-        renderSpeed(shownSpeed, C_RED);
+        if (face) renderFace(false, C_RED); else renderSpeed(shownSpeed, C_RED);
       } else {
         bool on = ((now / 400) % 2) == 0;              // 0,4 s på / 0,4 s av
-        if (on) renderSpeed(shownSpeed, C_RED); else fbClear();
+        if (!on) fbClear();
+        else if (face) renderFace(false, C_RED);
+        else renderSpeed(shownSpeed, C_RED);
       }
     } else {
       fbClear();
@@ -483,7 +526,7 @@ void signTick() {
 }
 
 void signSetTest(uint8_t m) {
-  testMode = m > 4 ? 0 : m;
+  testMode = m > 5 ? 0 : m;
   testStartMs = millis();
   lastFrameHash = 0;
 }
