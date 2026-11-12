@@ -394,6 +394,10 @@ static uint32_t frameHash() {
   return h;
 }
 
+uint8_t signBrightnessPct();      // Hardvara.h
+bool powerPanelsBlocked();
+uint8_t powerSaveOverride();
+
 static bool isNight() {
   if (!timeSynced) return false;              // okänd tid: dag-ljus
   time_t lt = time(nullptr) + tzOffsetMin * 60;
@@ -506,13 +510,18 @@ void signTick() {
   }
 
   // Ström till panelerna
-  bool wantOn = testMode || signState != SIGN_IDLE || sign.powerSave == 0 ||
-                now - lastActiveMs < (uint32_t)sign.powerSave * 1000;
+  // Batteridrift: släck panelerna mellan bilarna även om "Stäng av" står på 0,
+  // och helt vid kritiskt låg spänning (loggningen fortsätter ändå).
+  uint8_t ps = sign.powerSave ? sign.powerSave : powerSaveOverride();
+  bool wantOn = testMode || signState != SIGN_IDLE || ps == 0 ||
+                now - lastActiveMs < (uint32_t)ps * 1000;
+  if (powerPanelsBlocked() && !testMode) wantOn = false;
   if (wantOn && !panelsOn) { panelPower(true); lastFrameHash = 0; }
-  if (!wantOn && panelsOn && sign.powerSave > 0) { panelPower(false); return; }
+  if (!wantOn && panelsOn && (ps > 0 || powerPanelsBlocked())) { panelPower(false); return; }
+  if (!panelsOn) return;
 
-  // Ljusstyrka
-  uint8_t pct = isNight() ? sign.nightBright : sign.dayBright;
+  // Ljusstyrka: ljussensor, annars klockan (dag/natt)
+  uint8_t pct = signBrightnessPct();
   if (pct != curBrightPct) {
     curBrightPct = pct;
     hub->setBrightness8((uint8_t)((uint16_t)pct * 255 / 100));

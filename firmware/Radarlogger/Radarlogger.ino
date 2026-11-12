@@ -55,7 +55,7 @@
 // ------------------------------------------------------------
 //  INSTÄLLNINGAR SOM DU KAN ÄNDRA
 // ------------------------------------------------------------
-#define FW_VERSION      "0.4.2"
+#define FW_VERSION      "0.5.0"
 #define DEVICE_PREFIX   "Radarlogger"   // Bluetooth-namn, följt av 4 tecken från MAC
 #define BLE_PASSKEY     123456          // 6-siffrig PIN vid parkoppling
 
@@ -187,6 +187,12 @@ uint8_t  lastTargets     = 0;
 uint32_t lastFrameMs     = 0;
 uint32_t lastAckMs       = 0;    // senaste OK-svar från radarn
 uint32_t lastHealthMs    = 0;
+uint8_t  radarActive     = 1;    // 1 = LD2451, 2 = LD2415H (se Hardvara.h)
+bool     radarHasDistance = true; // LD2415H mäter bara hastighet
+bool     reqRadarRestart = false;
+void ld15Byte(uint8_t c);         // framåtdeklarationer (Hardvara.h)
+void ld15ApplySettings();
+void ld15ReadParams();
 volatile int bleConnCount = 0;
 uint32_t lastAdvCheckMs  = 0;
 uint8_t  lastPassSpeed   = 0;
@@ -287,6 +293,7 @@ void radarSend(uint16_t cmd, const uint8_t* value, uint8_t valueLen) {
 void radarWaitAndParse(uint32_t ms);   // framåtdeklaration
 
 void radarApplySettings(bool includeSensitivity) {
+  if (radarActive == 2) { ld15ApplySettings(); return; }
   Serial.println("Radar: skickar inställningar...");
   const uint8_t enable[2] = {0x01, 0x00};
   radarSend(0x00FF, enable, 2);              // starta konfigurationsläge
@@ -419,7 +426,7 @@ void finishPass() {
 
 // Har bilen passerat rapportlinjen i den här bilden?
 void checkReportLine(const Target& t) {
-  if (settings.reportDistance == 0 || passReportHit) return;
+  if (!radarHasDistance || settings.reportDistance == 0 || passReportHit) return;
   bool approaching = (t.dir == TARGET_DIR_APPROACH);
   bool crossed = approaching ? (t.distance <= settings.reportDistance)
                              : (t.distance >= settings.reportDistance);
@@ -440,7 +447,7 @@ void startPass(const Target& t) {
   passLastSeenMs = millis();
   passReportHit = false;
   // Börjar bilen redan innanför linjen räknas den inte som passerad vid linjen
-  if (settings.reportDistance > 0) {
+  if (radarHasDistance && settings.reportDistance > 0) {
     bool approaching = (t.dir == TARGET_DIR_APPROACH);
     bool inside = approaching ? (t.distance <= settings.reportDistance)
                               : (t.distance >= settings.reportDistance);
@@ -473,7 +480,7 @@ void handleTargets(const Target* targets, uint8_t n) {
   }
 
   // Ny bil? Ett mål som kommer mot radarn och plötsligt syns långt bort igen
-  if (approaching && t.distance > passLastDist + 15) {
+  if (radarHasDistance && approaching && t.distance > passLastDist + 15) {
     finishPass();
     startPass(t);
     return;
@@ -594,7 +601,8 @@ void parseByte(uint8_t c) {
 }
 
 void radarPoll() {
-  while (Serial1.available()) parseByte((uint8_t)Serial1.read());
+  if (radarActive == 2) { while (Serial1.available()) ld15Byte((uint8_t)Serial1.read()); }
+  else                  { while (Serial1.available()) parseByte((uint8_t)Serial1.read()); }
 }
 
 void radarWaitAndParse(uint32_t ms) {
@@ -604,6 +612,8 @@ void radarWaitAndParse(uint32_t ms) {
     delay(2);
   }
 }
+
+#include "Hardvara.h"
 
 // ------------------------------------------------------------
 //  SIMULATOR (SIMULATOR = 1)
@@ -655,10 +665,12 @@ void updateSettingsCharacteristic() {
 }
 
 void updateInfoCharacteristic() {
-  char buf[160];
+  char buf[220];
   snprintf(buf, sizeof(buf),
-           "{\"fw\":\"%s\",\"maxRecords\":%u,\"recordSize\":%u,\"sim\":%d}",
-           FW_VERSION, (unsigned)maxRecords, (unsigned)sizeof(PassRecord), SIMULATOR);
+           "{\"fw\":\"%s\",\"maxRecords\":%u,\"recordSize\":%u,\"sim\":%d,"
+           "\"radar\":\"%s\",\"dist\":%d,\"volt\":%.1f}",
+           FW_VERSION, (unsigned)maxRecords, (unsigned)sizeof(PassRecord), SIMULATOR,
+           radarName(radarActive), radarHasDistance ? 1 : 0, supplyVolts);
   chrInfo->setValue((const uint8_t*)buf, strlen(buf));
 }
 
@@ -817,6 +829,7 @@ void radarHealthCheck() {
   if (passActive || now - lastHealthMs < 10UL * 60 * 1000) return;
   lastHealthMs = now;
   if (lastFrameMs > 0 && now - lastFrameMs < 10UL * 60 * 1000) return;
+  if (radarActive == 2) { ld15ReadParams(); radarWaitAndParse(300); return; }
   const uint8_t enable[2] = {0x01, 0x00};
   radarSend(0x00FF, enable, 2);
   radarWaitAndParse(100);
@@ -1010,6 +1023,26 @@ input,select{font-size:15px;padding:6px;border-radius:8px;border:1px solid rgba(
 <details style="margin-top:12px"><summary class="st" style="text-align:left">Justera panelvariant (bara om bilden är hackig)</summary>
 <div class="grid" style="grid-template-columns:1fr 1fr">
 <button class="btn" onclick="nxt()">Nästa variant</button><button class="btn" onclick="v0()">Återställ till variant 0</button></div></details></div>
+<div class="card"><h2>Radar, ström och ljus</h2>
+<p class="st" id="hst" style="text-align:left"></p>
+<label>Radar<select id="h_rt"><option value="0">Automatisk</option><option value="1">LD2451 (100 m)</option><option value="2">LD2415H (180 m)</option></select></label>
+<label>LD2415H känslighet (1 = mest)<input id="h_se" type="number" min="1" max="15"></label>
+<label>LD2415H vinkel mot vägen (°)<input id="h_an" type="number" min="0" max="60"></label>
+<label>Strömkälla<select id="h_ps"><option value="0">Nät (230 V)</option><option value="1">Batteri / sol</option></select></label>
+<label>Sparläge under (V)<input id="h_vl" type="number" min="8" max="25" step="0.1"></label>
+<label>Släck skylten under (V)<input id="h_vc" type="number" min="8" max="25" step="0.1"></label>
+<label>Tänd igen över (V)<input id="h_vr" type="number" min="8" max="25" step="0.1"></label>
+<label>Ljusstyrning<select id="h_lm"><option value="0">Klocka (dag/natt)</option><option value="1">VEML7700</option><option value="2">Analog sensor</option></select></label>
+<label>Mörker under (lux)<input id="h_ld" type="number" min="1" max="1000"></label>
+<label>Fullt ljus över (lux)<input id="h_lb" type="number" min="10" max="60000"></label>
+<button class="btn" onclick="saveH()">Spara</button>
+<details style="margin-top:12px"><summary class="st" style="text-align:left">Kalibrera</summary>
+<p class="st" style="text-align:left">Spänning: mät 12 V-ingången med multimeter och skriv in värdet.</p>
+<label>Uppmätt spänning (V)<input id="h_cal" type="number" step="0.01"></label>
+<button class="btn" onclick="calV()">Kalibrera spänningen</button>
+<p class="st" style="text-align:left">Ljus: täck sensorn helt och tryck Mörker. Lys sedan med sol/stark lampa och tryck Ljust.</p>
+<div class="grid" style="grid-template-columns:1fr 1fr">
+<button class="btn" onclick="calL('dark')">Mörker nu</button><button class="btn" onclick="calL('bright')">Ljust nu</button></div></details></div>
 <div class="card"><h2>Uppdatera firmware</h2>
 <p class="st" style="text-align:left">Välj filen <b>radarlogger-x.y.z-ota.bin</b>. Loggen och inställningarna finns kvar.</p>
 <input id="otaf" type="file" accept=".bin" style="width:100%">
@@ -1026,7 +1059,10 @@ $('spd').textContent=r.speed||'–';$('dist').textContent=r.speed?r.dist:'–';
 $('dir').textContent=r.speed?(r.dir?'mot':'från'):'–';$('ang').textContent=r.speed?r.angle:'–';
 $('cnt').textContent=r.count;$('last').textContent=r.last||'–';$('tgt').textContent=r.targets;
 $('st').textContent=(r.radar?'Radar OK':'Ingen data från radarn')+' · '+(r.synced?'klocka ställd':'klocka ej ställd')+(r.full?' · LOGGEN FULL':'');
-$('name').textContent=r.name;$('fw').textContent=r.fw}catch(e){$('st').textContent='Ingen kontakt'}}
+$('name').textContent=r.name;$('fw').textContent=r.fw;
+if(!r.hasDist){$('dist').textContent='–';$('ang').textContent='–'}
+const BS=['','SPARLÄGE','SKYLTEN SLÄCKT (låg spänning)'];
+$('hst').textContent='Radar: '+r.radarType+' · '+(r.volt>0?r.volt.toFixed(2)+' V'+(r.batt>=0?' (ca '+r.batt+' %)':'')+(r.bstate?' · '+BS[r.bstate]:''):'spänning ej inkopplad')+' · Ljus: '+r.light+(r.lux>=0?' '+r.lux.toFixed(1)+' lux':'')+(r.ana>=0?' '+r.ana+' mV':'')+' · ljusstyrka '+r.bright+' %'}catch(e){$('st').textContent='Ingen kontakt'}}
 async function rec(){try{const a=await(await fetch('/recent?n=15')).json();
 $('rec').innerHTML=a.map(x=>'<tr><td>'+fmt(x[0],x[4])+'</td><td>'+x[1]+'</td><td>'+x[2]+'</td><td>'+(x[3]?'mot':'från')+'</td></tr>').join('')}catch(e){}}
 async function loadS(){const s=await(await fetch('/settings')).json();
@@ -1047,8 +1083,13 @@ const r=await(await fetch('/sign?'+q,{method:'POST'})).text();alert(r);loadG()}
 async function tst(m){await fetch('/signtest?m='+m,{method:'POST'});loadG()}
 async function v0(){await fetch('/sign?mapCombo=0',{method:'POST'});await fetch('/signtest?m=1',{method:'POST'});loadG()}
 async function nxt(){if(!confirm('Byta panelvariant? Variant 0 är rätt för dina paneler.'))return;await fetch('/signtest?m=1',{method:'POST'});$('gst').textContent=await(await fetch('/signnext',{method:'POST'})).text()}
+const H={rt:'radarType',se:'ld15Sens',an:'ld15Angle',ps:'powerSource',vl:'vLow',vc:'vCrit',vr:'vResume',lm:'lightMode',ld:'luxDark',lb:'luxBright'};
+async function loadH(){const s=await(await fetch('/hw')).json();for(const k in H)$('h_'+k).value=s[H[k]]}
+async function saveH(){const q=new URLSearchParams();for(const k in H)q.set(H[k],$('h_'+k).value);alert(await(await fetch('/hw?'+q,{method:'POST'})).text());loadH()}
+async function calV(){alert(await(await fetch('/hwcal?v='+$('h_cal').value,{method:'POST'})).text())}
+async function calL(w){alert(await(await fetch('/lightcal?which='+w,{method:'POST'})).text());loadH()}
 async function clr(){if(confirm('Rensa ALLA sparade passager?')){await fetch('/clear',{method:'POST'});rec()}}
-live();rec();loadS();loadG();setInterval(live,300);setInterval(rec,3000);
+live();rec();loadS();loadG();loadH();setInterval(live,300);setInterval(rec,3000);
 </script></body></html>)HTML";
 
 void webRoot() {
@@ -1056,19 +1097,85 @@ void webRoot() {
 }
 
 void webLive() {
-  char buf[320];
+  char buf[520];
   snprintf(buf, sizeof(buf),
     "{\"speed\":%u,\"dist\":%u,\"angle\":%d,\"dir\":%u,\"targets\":%u,"
     "\"count\":%lu,\"last\":%u,\"synced\":%s,\"radar\":%s,\"full\":%s,"
-    "\"now\":%lu,\"name\":\"%s\",\"fw\":\"%s\"}",
+    "\"now\":%lu,\"name\":\"%s\",\"fw\":\"%s\","
+    "\"radarType\":\"%s\",\"hasDist\":%d,\"volt\":%.2f,\"batt\":%d,\"bstate\":%u,"
+    "\"lux\":%.1f,\"ana\":%.0f,\"light\":\"%s\",\"bright\":%u}",
     lastPrimary.speed, lastPrimary.distance, lastPrimary.angle,
     (lastPrimary.dir == TARGET_DIR_APPROACH) ? 1 : 0, lastTargets,
     (unsigned long)recordCount, lastPassSpeed,
     timeSynced ? "true" : "false",
     radarIsOk() ? "true" : "false",
     logFull ? "true" : "false",
-    (unsigned long)nowValue(), deviceName, FW_VERSION);
+    (unsigned long)nowValue(), deviceName, FW_VERSION,
+    radarName(radarActive), radarHasDistance ? 1 : 0, supplyVolts,
+    supplyVolts > 0 ? battPercent(supplyVolts) : -1, battState,
+    luxNow, anaMvNow, lightSourceText(), signBrightnessPct());
   web.send(200, "application/json", buf);
+}
+
+void webGetHw() {
+  char buf[400];
+  snprintf(buf, sizeof(buf),
+    "{\"radarType\":%u,\"detected\":%u,\"ld15Sens\":%u,\"ld15Angle\":%u,\"powerSource\":%u,"
+    "\"vCal\":%u,\"vLow\":%.1f,\"vCrit\":%.1f,\"vResume\":%.1f,\"lightMode\":%u,"
+    "\"luxDark\":%u,\"luxBright\":%u,\"anaDark\":%u,\"anaBright\":%u,\"veml\":%s}",
+    hw.radarType, hw.detected, hw.ld15Sens, hw.ld15Angle, hw.powerSource, hw.vCal,
+    hw.vLow / 10.0, hw.vCrit / 10.0, hw.vResume / 10.0, hw.lightMode,
+    hw.luxDark, hw.luxBright, hw.anaDark, hw.anaBright, vemlFound ? "true" : "false");
+  web.send(200, "application/json", buf);
+}
+
+void webPostHw() {
+  HwSettings h = hw;
+  auto u8 = [](const char* k, uint8_t& v) { if (web.hasArg(k)) v = (uint8_t)constrain(web.arg(k).toInt(), 0, 255); };
+  auto u16 = [](const char* k, uint16_t& v) { if (web.hasArg(k)) v = (uint16_t)constrain(web.arg(k).toInt(), 0, 65535); };
+  auto dv = [](const char* k, uint8_t& v) { if (web.hasArg(k)) v = (uint8_t)constrain((int)lroundf(web.arg(k).toFloat() * 10), 0, 255); };
+  u8("radarType", h.radarType); u8("ld15Sens", h.ld15Sens); u8("ld15Angle", h.ld15Angle);
+  u8("powerSource", h.powerSource); dv("vLow", h.vLow); dv("vCrit", h.vCrit); dv("vResume", h.vResume);
+  u8("lightMode", h.lightMode); u16("luxDark", h.luxDark); u16("luxBright", h.luxBright);
+  u16("anaDark", h.anaDark); u16("anaBright", h.anaBright);
+  clampHw(h);
+  bool radarChanged = h.radarType != hw.radarType || h.ld15Sens != hw.ld15Sens || h.ld15Angle != hw.ld15Angle;
+  if (h.lightMode == LIGHT_VEML && hw.lightMode != LIGHT_VEML) lightInit();
+  hw = h;
+  saveHw();
+  lightFrac = -1;
+  if (radarChanged) reqRadarRestart = true;
+  web.send(200, "text/plain", radarChanged ? "Sparat. Radarn startas om." : "Sparat");
+}
+
+// Kalibrera spänningen: skriv in vad multimetern visar
+void webHwCal() {
+  float v = web.hasArg("v") ? web.arg("v").toFloat() : 0;
+  hw.vCal = 11000;
+  float raw = readSupplyRaw();               // med standardfaktorn
+  if (v < 5 || v > 40 || raw < 1.5f) { loadHw(); web.send(400, "text/plain", "Ingen spänning uppmätt – är delaren inkopplad?"); return; }
+  hw.vCal = (uint16_t)constrain((int)lroundf(11000.0f * v / raw), 2000, 30000);
+  saveHw();
+  voltAvg = 0;
+  web.send(200, "text/plain", "Kalibrerat");
+}
+
+// Ljuskalibrering: spara nuvarande värde som "mörkt" eller "ljust"
+void webLightCal() {
+  bool dark = web.arg("which") == "dark";
+  if (hw.lightMode == LIGHT_ANALOG && anaMvNow >= 0) {
+    (dark ? hw.anaDark : hw.anaBright) = (uint16_t)anaMvNow;
+  } else if (hw.lightMode == LIGHT_VEML && luxNow >= 0) {
+    uint16_t lx = (uint16_t)constrain((int)lroundf(luxNow), 1, 60000);
+    (dark ? hw.luxDark : hw.luxBright) = lx;
+  } else {
+    web.send(400, "text/plain", "Ingen ljussensor aktiv");
+    return;
+  }
+  clampHw(hw);
+  saveHw();
+  lightFrac = -1;
+  web.send(200, "text/plain", dark ? "Sparat som mörker" : "Sparat som fullt dagsljus");
 }
 
 void webRecent() {
@@ -1272,6 +1379,10 @@ void wifiInit() {
   web.on("/sign",      HTTP_POST, webPostSign);
   web.on("/signtest",  HTTP_POST, webSignTest);
   web.on("/signnext",  HTTP_POST, webSignNext);
+  web.on("/hw",        HTTP_GET,  webGetHw);
+  web.on("/hw",        HTTP_POST, webPostHw);
+  web.on("/hwcal",     HTTP_POST, webHwCal);
+  web.on("/lightcal",  HTTP_POST, webLightCal);
   web.on("/update",    HTTP_POST, webUpdateDone, webUpdateUpload);
   web.begin();
   Serial.printf("WiFi: natverk \"%s\", losenord \"%s\", oppna http://%s\n",
@@ -1295,6 +1406,7 @@ void setup() {
 
   loadSettings();
   logInit();
+  hardwareInit();
 
   Serial1.setRxBufferSize(1024);
   Serial1.begin(RADAR_BAUD, SERIAL_8N1, RADAR_RX_PIN, RADAR_TX_PIN);
@@ -1304,7 +1416,7 @@ void setup() {
   randomSeed(esp_random());
 #else
   radarWaitAndParse(500);           // låt radarn starta
-  radarApplySettings(false);
+  radarStart();                     // identifierar LD2451 / LD2415H och skickar inställningarna
 #endif
 
   signInit();
@@ -1323,6 +1435,14 @@ void loop() {
   checkPassTimeout();
   clearStaleTarget();
   radarHealthCheck();
+  hardwareTick();
+  if (reqRadarRestart) {
+    reqRadarRestart = false;
+    finishPass();
+    lastFrameMs = 0;
+    lastAckMs = 0;
+    radarStart();
+  }
 #if WIFI_ENABLED
   web.handleClient();
 #endif

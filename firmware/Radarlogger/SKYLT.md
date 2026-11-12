@@ -1,11 +1,11 @@
-# LED-skylten på ESP:n (firmware 0.4.0)
+# LED-skylten på ESP:n (firmware 0.5.0)
 
 ESP32-S3:an styr nu de två P10-panelerna direkt, i stället för Pi Zero. Visningen är samma som i `radar_live.py`:
 
 - När ett nytt fordon kommer visas den blå skylten med gränsen (50) i 2 s, men högst var 30:e sekund.
 - Därefter visas hastigheten. Den är grön under "röd från" och röd från den gränsen. Från "blinkande röd från" blinkar den röd, 0,4 s tänd och 0,4 s släckt.
 - Skylten släcks när fordonet är borta.
-- Ljusstyrkan följer dag och natt.
+- Ljusstyrkan följer en ljussensor (VEML7700 eller analog). Utan sensor följer den dag och natt.
 
 Panelinställningen är exakt den från Pi:n: `rows=16, cols=32, chain_length=2, multiplexing=4, pixel_mapper="U-mapper"`. Samma pixelomräkning görs i `Skylt.h`. Blir bilden ändå fel kan du byta variant på webbsidan utan att flasha om.
 
@@ -57,7 +57,7 @@ Utan MOSFET låter du värdet stå på **0**, som betyder att panelerna alltid �
 
 ## Första test
 
-1. Ladda upp `radarlogger-0.4.0-ota.bin` på `http://192.168.4.1`, under Uppdatera firmware. Loggen finns kvar.
+1. Ladda upp `radarlogger-0.5.0-ota.bin` på `http://192.168.4.1`, under Uppdatera firmware. Loggen finns kvar.
 2. Stäng av allt, koppla in panelerna och slå på strömmen.
 3. Öppna webbsidan och gå till **LED-skylt** och sedan **Färgrutor**. Rätt bild har:
    - vit ram
@@ -88,6 +88,69 @@ Vill du testa utan bilar kan du flasha `radarlogger-0.4.0-simulator.bin` via USB
 
 Standardvärdena är samma som i Home Assistant. Natt kräver att klockan är ställd. Den ställs automatiskt när appen eller webbsidan ansluter. Efter ett strömavbrott används dagsljus tills klockan har ställts igen.
 
+## Nytt i 0.5.0: radarkontakt, spänning och ljussensor
+
+Allt ställs in på webbsidan under **Radar, ström och ljus**.
+
+### Radarkontakten (samma för båda radartyperna)
+
+| Stift | Signal | Ansluts till |
+|---|---|---|
+| 1 | +12 V | LD2415H VCC (9–24 V) |
+| 2 | +5 V | LD2451 VCC (5 V) |
+| 3 | GND | radarns GND |
+| 4 | ESP TX (GPIO 17) | radarns RX |
+| 5 | ESP RX (GPIO 18) | radarns TX |
+| 6 | reserv | (används inte) |
+
+- Radarn identifieras automatiskt vid start: först LD2451 (115200 baud), sedan LD2415H (9600 baud). Hittas ingen används den som hittades senast, och ESP:n letar igen varje minut.
+- Du kan också låsa radartypen på webbsidan.
+- LD2415H mäter bara hastighet. Då visas inget avstånd eller vinkel, och rapportavståndet används inte. Allt annat fungerar som vanligt: skylten, gubben, loggen och appen.
+- För LD2415H finns två egna inställningar. Känslighet går från 1 (mest känslig) till 15, med 5 som standard. Vinkel mot vägen anges i grader, där 0 betyder att radarn pekar rakt längs vägen.
+- Använd LD2415H med **TTL-utgång**, inte RS485.
+
+### Ström in
+
+- Skylten tar alltid **12 V in** (9–36 V), genom en säkring (3 A trög) och ett backströmsskydd.
+- En Mean Well DDR-60G-5 gör om spänningen till 5 V för panelerna, ESP:n och LD2451.
+
+### Spänningsmätning (för batteri och sol)
+
+1. Löd ett motstånd på 100 kΩ från +12 V (efter säkringen) till GPIO 3.
+2. Löd ett motstånd på 10 kΩ från GPIO 3 till GND.
+3. Löd en kondensator på 100 nF från GPIO 3 till GND.
+4. Mät 12 V med en multimeter. Skriv in värdet under **Kalibrera** och tryck **Kalibrera spänningen**.
+5. Sätt **Strömkälla** till *Batteri / sol*. Då gäller följande:
+   - Panelerna släcks 5 s efter varje bil.
+   - Under **Sparläge** (12,4 V) är ljusstyrkan högst 50 %.
+   - Under **Släck skylten** (12,0 V) är panelerna helt av. Radarn loggar fortfarande.
+   - Skylten tänds igen över 12,8 V.
+
+Utan delare visar webbsidan "spänning ej inkopplad", och allt fungerar som förut.
+
+### Ljussensor VEML7700 (rekommenderas)
+
+| VEML7700 | ESP32-S3 |
+|---|---|
+| VIN | 3V3 |
+| GND | GND |
+| SDA | GPIO 41 |
+| SCL | GPIO 42 |
+
+- Sensorn ska titta ut genom fronten, men inte rakt in i LED-ljuset. En bit svart krympslang runt den fungerar bra.
+- Ljusstyrkan följer ljuset mjukt, utjämnat över cirka 20 s. Under **Mörker** (5 lux) används nattljusstyrkan. Över **Fullt ljus** (20 000 lux) används dagljusstyrkan. Däremellan följer ljusstyrkan en logaritmisk kurva.
+- Kalibrera så här:
+  1. Täck sensorn helt och tryck **Mörker nu**.
+  2. Lys på den med sol eller en stark lampa och tryck **Ljust nu**.
+
+### Analog ljussensor (KY-054 eller MH-sensor)
+
+1. Koppla VCC till **3V3**, aldrig 5 V.
+2. Koppla GND till GND.
+3. Koppla AO till GPIO 2.
+4. Välj **Ljusstyrning: Analog sensor**.
+5. Kalibrera med **Mörker nu** och **Ljust nu**. Det fungerar oavsett om sensorns spänning stiger eller sjunker med ljuset.
+
 ## Bygga själv (Arduino IDE)
 
-Du behöver biblioteken **ESP32 HUB75 LED MATRIX PANEL DMA Display** (mrcodetastic, 3.x), **Adafruit GFX Library** och **NimBLE-Arduino** 2.x. `Skylt.h` ska ligga i samma mapp som `Radarlogger.ino`.
+Du behöver biblioteken **ESP32 HUB75 LED MATRIX PANEL DMA Display** (mrcodetastic, 3.x), **Adafruit GFX Library** och **NimBLE-Arduino** 2.x. `Skylt.h` och `Hardvara.h` ska ligga i samma mapp som `Radarlogger.ino`.
