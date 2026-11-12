@@ -114,6 +114,21 @@ Allt ställs in på webbsidan under **Radar, ström och ljus**.
 - Skylten tar alltid **12 V in** (9–36 V), genom en säkring (3 A trög) och ett backströmsskydd.
 - En Mean Well DDR-60G-5 gör om spänningen till 5 V för panelerna, ESP:n och LD2451.
 
+Före skylten sitter olika saker beroende på hur kunden matar den:
+
+```
+230 V ──► LPV-60-12 ──► 12 V ──► [säkring + backskydd] ──► skylten
+                                                    ├─► LD2415H (12 V direkt)
+                                                    ├─► spänningsdelaren → GPIO 3
+                                                    └─► DDR-60G-5 ──► 5 V ──► paneler, ESP32, LD2451
+```
+
+| Paket | Före skylten |
+|---|---|
+| A: nät | Mean Well LPV-60-12 (eller HLG-60H-12) |
+| B: sol | solpanel → Victron MPPT 75/10 → 4S LiFePO4 med BMS som stoppar laddning i kyla |
+| C: nät + batteri | Victron Blue Smart IP65 12 V-laddare → 4S LiFePO4 |
+
 ### Spänningsmätning (för batteri och sol)
 
 1. Löd ett motstånd på 100 kΩ från +12 V (efter säkringen) till GPIO 3.
